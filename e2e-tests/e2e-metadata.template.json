@@ -1,0 +1,24 @@
+{
+  "answers": {
+    "confirmDevTenant": false,
+    "runPrefix": "E2E",
+    "notes": "This kit generates scripts that New-E2ETestSet.ps1 does NOT deploy itself - you run Deploy-IntuneScripts.ps1 against the generated folders yourself, against a DEV tenant. confirmDevTenant is a safety gate: New-E2ETestSet.ps1 refuses to generate anything until you set it to true, as confirmation that you understand this and that -Path in your own Deploy-IntuneScripts.ps1 run will point at a dev tenant's script folder, not production. runPrefix is stamped on every generated script's Intune display name; bump it (e.g. E2E2) to start a fresh, non-colliding batch instead of updating the previous one."
+  },
+  "groups": {
+    "include": {
+      "displayName": "",
+      "guid": "",
+      "notes": "Used by the '#group: by name' and '#group: by guid' tests. Fill in displayName to generate the by-name variant, guid to generate the by-guid variant; fill in both to get both. Leave both blank and both variants are skipped (noted in CHECKLIST.md)."
+    },
+    "includeSecondary": {
+      "displayName": "",
+      "guid": "",
+      "notes": "A second group, assigned alongside 'include' by the multi-#group: test. That test uses display names, so only displayName is read here."
+    },
+    "exclude": {
+      "displayName": "",
+      "guid": "",
+      "notes": "Used by the #excludegroup: tests, alone (everyone except this group) and combined with 'include'."
+    }
+  }
+}

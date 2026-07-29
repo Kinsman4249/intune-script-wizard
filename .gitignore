@@ -6,3 +6,7 @@ logs/
 # Session notes (see CLAUDE.md workflow)
 handoff.md
 todo.md
+
+# E2E test kit - tenant-specific group data and generated build output.
+e2e-tests/e2e-metadata.json
+e2e-tests/generated/
