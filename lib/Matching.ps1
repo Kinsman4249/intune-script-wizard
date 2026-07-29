@@ -3,19 +3,10 @@
 # (near-duplicate name/description detection).
 
 function Get-WizardFileHash {
+    # Lower-cased so it compares safely against the hashes GraphOps computes,
+    # even if a caller later switches to -ceq or a hashtable lookup.
     param([Parameter(Mandatory)][string]$Path)
-    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
-}
-
-function Get-WizardStringHash {
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join ''
-    } finally {
-        $sha.Dispose()
-    }
+    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
 function Get-LevenshteinDistance {
@@ -64,3 +55,41 @@ function Get-StringSimilarity {
 # Similarity at/above this (but below 1.0) counts as a "fuzzy" match worth
 # prompting about. Below this, names are treated as unrelated.
 $script:FuzzyMatchThreshold = 0.75
+
+# Below this name similarity a pair is so clearly unrelated that comparing the
+# descriptions too would only waste time. Levenshtein is O(n*m) and interpreted
+# here, so this short-circuit matters once a tenant has many scripts.
+$script:DescriptionCompareFloor = 0.50
+
+# Descriptions are truncated to this many characters before comparison. Keeps
+# the O(n*m) cost bounded; the opening lines carry the distinguishing text anyway.
+$script:DescriptionCompareMaxLength = 200
+
+function Get-WizardMatchScore {
+    # Combined name/description similarity, as documented in the wizard's help.
+    # When either side has no description there is nothing to compare, so the
+    # name score stands alone. Otherwise the name dominates (70/30): two scripts
+    # with near-identical names but genuinely different descriptions are more
+    # likely to be different scripts than a rename of the same one.
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$LocalName,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$LocalDescription,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ExistingName,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ExistingDescription
+    )
+
+    $nameScore = Get-StringSimilarity -A $LocalName -B $ExistingName
+
+    if ($nameScore -lt $script:DescriptionCompareFloor) { return $nameScore }
+    if ([string]::IsNullOrWhiteSpace($LocalDescription) -or
+        [string]::IsNullOrWhiteSpace($ExistingDescription)) {
+        return $nameScore
+    }
+
+    $max = $script:DescriptionCompareMaxLength
+    $a = if ($LocalDescription.Length    -gt $max) { $LocalDescription.Substring(0, $max) }    else { $LocalDescription }
+    $b = if ($ExistingDescription.Length -gt $max) { $ExistingDescription.Substring(0, $max) } else { $ExistingDescription }
+
+    $descScore = Get-StringSimilarity -A $a -B $b
+    return (0.7 * $nameScore) + (0.3 * $descScore)
+}
