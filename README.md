@@ -1,3 +1,5 @@
+TODO: disconnect mg graph whether script exits gracefully or not
+
 # intune-script-wizard
 
 Deploys PowerShell platform scripts to Microsoft Intune from local `user/` and
