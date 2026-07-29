@@ -28,12 +28,34 @@ function Connect-WizardGraph {
 
     $scopes = @($script:RequiredScopes) + @($AdditionalScopes) | Select-Object -Unique
 
-    $context = Get-MgContext
-    if (-not $context -or ($scopes | Where-Object { $_ -notin $context.Scopes })) {
-        Write-WizardDebug "Connecting to Graph with scopes: $($scopes -join ', ')"
-        Connect-MgGraph -Scopes $scopes -NoWelcome
+    try {
+        $context = Get-MgContext
+        if (-not $context -or ($scopes | Where-Object { $_ -notin $context.Scopes })) {
+            Write-WizardDebug "Connecting to Graph with scopes: $($scopes -join ', ')"
+            Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
+        }
+    } catch {
+        # Sign-in covers a lot of distinct failures (cancelled browser prompt,
+        # blocked device-code flow, conditional access, an admin who has not
+        # consented to the scope). The SDK's own message is kept, with the
+        # scopes appended because "which permission?" is the first question.
+        throw "Could not sign in to Microsoft Graph: $(Get-WizardErrorSummary -ErrorRecord $_). Scopes requested: $($scopes -join ', '). Check the account has Intune administrator rights and that an admin has consented to these scopes."
     }
+
     $context = Get-MgContext
+    if (-not $context) {
+        throw "Microsoft Graph reported a successful sign-in but returned no session context. Run Disconnect-MgGraph and try again."
+    }
+
+    # A tenant can hand back fewer scopes than were asked for (an admin consent
+    # policy trimming the request). Catching that now turns a later, confusing
+    # 403 on a specific call into one clear message up front.
+    $granted = @($context.Scopes)
+    $notGranted = @($scopes | Where-Object { $_ -notin $granted })
+    if ($notGranted.Count -gt 0) {
+        throw "Signed in as $($context.Account), but the tenant did not grant: $($notGranted -join ', '). An administrator needs to consent to these scopes before the wizard can run."
+    }
+
     Write-WizardDebug "Graph context: tenant=$($context.TenantId) account=$($context.Account) type=$($context.AuthType)"
 }
 
@@ -49,7 +71,11 @@ function Resolve-WizardGroupName {
     $uri = '/v1.0/groups?$filter=' + $filter + '&$select=id,displayName'
 
     Write-WizardDebug "GET $uri"
-    $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+    try {
+        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+    } catch {
+        throw "Could not look up group '$Name' in Entra ID: $(Get-WizardErrorSummary -ErrorRecord $_). This needs the $script:GroupReadScope scope; if consent was declined, use the group's object GUID in #group: instead."
+    }
     $matched = @($response['value'])
 
     if ($matched.Count -eq 0) {
@@ -125,18 +151,25 @@ function Get-WizardExistingScripts {
     )
 
     $cache = @{}
-    if (Test-Path -LiteralPath $CachePath) {
-        try {
-            (Get-Content -LiteralPath $CachePath -Raw | ConvertFrom-Json) | ForEach-Object {
-                $cache[$_.Id] = $_
-            }
-            Write-WizardDebug "Loaded $($cache.Count) cached script hashes from $CachePath"
-        } catch {
-            Write-Warning "Could not read cache file '$CachePath', rebuilding it."
+    try {
+        $cached = Read-WizardJsonFile -Path $CachePath
+        foreach ($entry in @($cached)) {
+            if ($entry -and $entry.Id) { $cache[$entry.Id] = $entry }
         }
+        if ($cache.Count -gt 0) {
+            Write-WizardDebug "Loaded $($cache.Count) cached script hashes from $CachePath"
+        }
+    } catch {
+        # The cache is a pure optimisation, so a damaged one costs a slower run
+        # and nothing else.
+        Write-Warning "Could not read cache file '$CachePath' ($($_.Exception.Message)), rebuilding it."
     }
 
-    $existing = Get-MgBetaDeviceManagementScript -All -Property id, displayName, description, lastModifiedDateTime
+    try {
+        $existing = Get-MgBetaDeviceManagementScript -All -Property id, displayName, description, lastModifiedDateTime
+    } catch {
+        throw "Could not read the existing scripts from Intune: $(Get-WizardErrorSummary -ErrorRecord $_). Without that list the wizard cannot tell a new script from an existing one, so it will not deploy anything."
+    }
     Write-WizardDebug "Tenant returned $(@($existing).Count) existing scripts"
 
     $results = @()
@@ -146,18 +179,26 @@ function Get-WizardExistingScripts {
         $modified = if ($item.LastModifiedDateTime) { $item.LastModifiedDateTime.ToString('o') } else { $null }
 
         $cached = $cache[$item.Id]
-        if ($modified -and $cached -and $cached.LastModifiedDateTime -eq $modified) {
+        # A cached entry with no hash is one a previous run could not read;
+        # retry it rather than caching the failure forever.
+        if ($modified -and $cached -and $cached.ContentHash -and $cached.LastModifiedDateTime -eq $modified) {
             $hash = ([string]$cached.ContentHash).ToLowerInvariant()
             Write-WizardDebug "  cache hit for $($item.Id) '$($item.DisplayName)'"
         } else {
-            Write-WizardDebug "  downloading content for $($item.Id) '$($item.DisplayName)'"
-            $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
-            $bytes = [System.Convert]::FromBase64String($full.ScriptContent)
-            $sha = [System.Security.Cryptography.SHA256]::Create()
+            # One unreadable script in the tenant must not stop the whole run:
+            # its hash is left null, which matches nothing, so the worst case is
+            # that a local script is treated as new and matched by name instead.
+            $hash = $null
             try {
-                $hash = ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join ''
-            } finally {
-                $sha.Dispose()
+                Write-WizardDebug "  downloading content for $($item.Id) '$($item.DisplayName)'"
+                $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
+                if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) {
+                    throw "the tenant returned no script content"
+                }
+                $hash = Get-WizardBytesHash -Bytes ([System.Convert]::FromBase64String($full.ScriptContent))
+            } catch {
+                Write-Warning "Could not hash existing script '$($item.DisplayName)' ($($item.Id)): $(Get-WizardErrorSummary -ErrorRecord $_). It will not be matched by content this run."
+                Write-WizardDebug (Get-WizardErrorDetail -ErrorRecord $_)
             }
         }
 
@@ -170,7 +211,13 @@ function Get-WizardExistingScripts {
         }
     }
 
-    $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $CachePath
+    try {
+        Save-WizardJsonFile -Path $CachePath -Value $results -Depth 5
+    } catch {
+        # A read-only -Path is a perfectly valid way to run this tool; losing the
+        # cache only means the next run re-downloads content.
+        Write-Warning "Could not write the hash cache to '$CachePath': $($_.Exception.Message). The next run will rebuild it."
+    }
     return $results
 }
 
@@ -184,11 +231,22 @@ function Get-WizardScriptAssignments {
 
     $uri = "$script:ScriptsUri/$Id/assignments"
     $all = @()
-    while ($uri) {
+    # Bounded so a service that keeps handing back a nextLink cannot spin here
+    # forever. An assignment set large enough to hit this does not exist.
+    $page = 0
+    while ($uri -and $page -lt 100) {
         Write-WizardDebug "GET $uri"
-        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+        try {
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+        } catch {
+            throw "Could not read the assignments of script $Id : $(Get-WizardErrorSummary -ErrorRecord $_)"
+        }
         if ($response['value']) { $all += @($response['value']) }
         $uri = $response['@odata.nextLink']
+        $page++
+    }
+    if ($uri) {
+        throw "Reading the assignments of script $Id did not finish after $page pages. Aborting rather than backing up a partial assignment set."
     }
     Write-WizardDebug "  $($all.Count) assignment(s) on $Id"
     return $all
@@ -231,7 +289,13 @@ function Set-WizardWholeAssignment {
 
     Write-WizardDebug "POST $uri"
     Write-WizardDebug "  body: $json"
-    Invoke-MgGraphRequest -Method POST -Uri $uri -Body $json -ContentType 'application/json' | Out-Null
+    try {
+        Invoke-MgGraphRequest -Method POST -Uri $uri -Body $json -ContentType 'application/json' | Out-Null
+    } catch {
+        # A 400 here is almost always a group id the tenant does not recognise,
+        # which the pre-flight cannot catch for GUIDs supplied directly.
+        throw "The assign action was rejected: $(Get-WizardErrorSummary -ErrorRecord $_). Check that every #group:/#excludegroup: GUID exists in this tenant."
+    }
 }
 
 function New-WizardAssignmentEntry {
@@ -331,17 +395,35 @@ function New-WizardScript {
     Write-Host "Creating '$($Meta.DisplayName)' ($($Meta.Type))..."
     Write-WizardDebug "New script: file=$($Meta.FileName) runAs=$($Meta.RunAsAccount) 32bit=$($Meta.RunAs32Bit) sigCheck=$($Meta.EnforceSignatureCheck) noAssign=$($Meta.NoAssignments)"
 
-    $script = New-MgBetaDeviceManagementScript `
-        -DisplayName $Meta.DisplayName `
-        -Description $Meta.Description `
-        -FileName $Meta.FileName `
-        -ScriptContentInputFile $Meta.Path `
-        -RunAsAccount $Meta.RunAsAccount `
-        -EnforceSignatureCheck:$Meta.EnforceSignatureCheck `
-        -RunAs32Bit:$Meta.RunAs32Bit
+    try {
+        $script = New-MgBetaDeviceManagementScript `
+            -DisplayName $Meta.DisplayName `
+            -Description $Meta.Description `
+            -FileName $Meta.FileName `
+            -ScriptContentInputFile $Meta.Path `
+            -RunAsAccount $Meta.RunAsAccount `
+            -EnforceSignatureCheck:$Meta.EnforceSignatureCheck `
+            -RunAs32Bit:$Meta.RunAs32Bit
+    } catch {
+        throw "Creating '$($Meta.DisplayName)' failed: $(Get-WizardErrorSummary -ErrorRecord $_)"
+    }
+
+    if (-not $script -or -not $script.Id) {
+        throw "Creating '$($Meta.DisplayName)' returned no script id, so its assignments cannot be set. Check the script in the Intune portal before re-running."
+    }
 
     Write-WizardDebug "Created $($script.Id)"
-    Set-WizardAssignments -Id $script.Id -Meta $Meta
+
+    # Create and assign are two calls with no transaction between them. If the
+    # second fails the script exists but reaches nobody, which looks exactly like
+    # a script that has not deployed yet - so the id goes in the message, because
+    # the next run will not find it by content hash if the file changes again.
+    try {
+        Set-WizardAssignments -Id $script.Id -Meta $Meta
+    } catch {
+        throw "'$($Meta.DisplayName)' was created in Intune as $($script.Id) but its assignments could not be set: $(Get-WizardErrorSummary -ErrorRecord $_). The script exists and is assigned to nobody; re-run to finish it, or delete it in the portal."
+    }
+
     return $script
 }
 
@@ -352,21 +434,50 @@ function Update-WizardScript {
         [Parameter(Mandatory)][string]$BackupDir
     )
 
-    Backup-WizardScript -Id $ExistingId -BackupDir $BackupDir | Out-Null
+    # Deliberately not wrapped: if the backup cannot be taken, the update must
+    # not happen either. That is the whole point of taking one.
+    $backupPath = Backup-WizardScript -Id $ExistingId -BackupDir $BackupDir
 
     Write-Host "Updating '$($Meta.DisplayName)' ($($Meta.Type))..."
     Write-WizardDebug "Update $ExistingId from $($Meta.Path)"
 
-    Update-MgBetaDeviceManagementScript `
-        -DeviceManagementScriptId $ExistingId `
-        -DisplayName $Meta.DisplayName `
-        -Description $Meta.Description `
-        -FileName $Meta.FileName `
-        -ScriptContentInputFile $Meta.Path `
-        -RunAsAccount $Meta.RunAsAccount `
-        -EnforceSignatureCheck:$Meta.EnforceSignatureCheck `
-        -RunAs32Bit:$Meta.RunAs32Bit | Out-Null
+    # Every failure from here on leaves the existing script in some intermediate
+    # state, so the backup path travels with the error - restoring it is the one
+    # action that always puts the tenant back the way it was.
+    $restoreHint = "Restore the previous state with: -Restore '$backupPath'"
 
-    Set-WizardAssignments -Id $ExistingId -Meta $Meta
+    try {
+        Update-MgBetaDeviceManagementScript `
+            -DeviceManagementScriptId $ExistingId `
+            -DisplayName $Meta.DisplayName `
+            -Description $Meta.Description `
+            -FileName $Meta.FileName `
+            -ScriptContentInputFile $Meta.Path `
+            -RunAsAccount $Meta.RunAsAccount `
+            -EnforceSignatureCheck:$Meta.EnforceSignatureCheck `
+            -RunAs32Bit:$Meta.RunAs32Bit | Out-Null
+    } catch {
+        throw "Updating '$($Meta.DisplayName)' ($ExistingId) failed: $(Get-WizardErrorSummary -ErrorRecord $_). $restoreHint"
+    }
+
+    try {
+        Set-WizardAssignments -Id $ExistingId -Meta $Meta
+    } catch {
+        throw "'$($Meta.DisplayName)' ($ExistingId) was updated but its assignments were not: $(Get-WizardErrorSummary -ErrorRecord $_). The new script content is live against the old assignments. $restoreHint"
+    }
+}
+
+function Remove-WizardScript {
+    # No caller in Deploy-IntuneScripts.ps1 itself - the wizard never deletes
+    # anything on its own. Used by e2e-tests/Remove-E2ETestSet.ps1 to tear
+    # down scripts it created, and by hand for one-off cleanup.
+    param([Parameter(Mandatory)][string]$Id)
+
+    Write-WizardDebug "Deleting $Id"
+    try {
+        Remove-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+    } catch {
+        throw "Could not delete script $Id : $(Get-WizardErrorSummary -ErrorRecord $_)"
+    }
 }
 

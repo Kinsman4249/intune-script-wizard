@@ -52,6 +52,11 @@ function New-MgBetaDeviceManagementScript {
         roleScopeTagIds = @($RoleScopeTagIds)
     }
     $state = Get-StubState2
+    # 'failCreate' names a display name the fake tenant rejects, so the tests can
+    # exercise the per-script failure path without a real 400 from Graph.
+    if ($state['failCreate'] -and $DisplayName -eq $state['failCreate']) {
+        throw "Stub: tenant rejected '$DisplayName' (BadRequest)"
+    }
     $id = "new-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     $bytes = [System.IO.File]::ReadAllBytes($ScriptContentInputFile)
     $state['scripts'] += @{
@@ -93,4 +98,14 @@ function Update-MgBetaDeviceManagementScript {
     Set-StubState2 $state
 }
 
-Export-ModuleMember -Function Get-MgBetaDeviceManagementScript, New-MgBetaDeviceManagementScript, Update-MgBetaDeviceManagementScript
+function Remove-MgBetaDeviceManagementScript {
+    param([string]$DeviceManagementScriptId)
+    Add-StubCall2 'Remove-MgBetaDeviceManagementScript' @{ id = $DeviceManagementScriptId }
+    $state = Get-StubState2
+    $before = @($state['scripts']).Count
+    $state['scripts'] = @($state['scripts'] | Where-Object { $_['id'] -ne $DeviceManagementScriptId })
+    if (@($state['scripts']).Count -eq $before) { throw "Stub: script $DeviceManagementScriptId not found" }
+    Set-StubState2 $state
+}
+
+Export-ModuleMember -Function Get-MgBetaDeviceManagementScript, New-MgBetaDeviceManagementScript, Update-MgBetaDeviceManagementScript, Remove-MgBetaDeviceManagementScript

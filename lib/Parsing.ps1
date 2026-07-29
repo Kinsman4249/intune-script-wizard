@@ -28,7 +28,14 @@ function Get-ScriptMetadata {
         [switch]$AllowTypeOverride
     )
 
-    $lines = Get-Content -LiteralPath $Path
+    try {
+        # -ErrorAction Stop matters even under a 'Stop' preference: Get-Content
+        # reports some read failures as non-terminating errors per file.
+        $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
+    } catch {
+        throw "Could not read '$Path': $($_.Exception.Message). Fix the file's permissions, close whatever is holding it open, or move it out of the scanned folder."
+    }
+
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Path)
 
     $displayName = $baseName
@@ -197,16 +204,26 @@ function Find-WizardScripts {
 
     foreach ($folder in @('user', 'device')) {
         $dir = Join-Path $RootPath $folder
-        if (Test-Path -LiteralPath $dir -PathType Container) {
-            foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -Recurse -File)) {
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        try {
+            # A subfolder the account cannot read would otherwise silently
+            # contribute nothing, and the run would look like a success that
+            # simply had less to do.
+            foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -Recurse -File -ErrorAction Stop)) {
                 $candidates += [pscustomobject]@{ File = $file; FolderType = $folder }
             }
+        } catch {
+            throw "Could not list the scripts under '$dir': $($_.Exception.Message)"
         }
     }
 
     # Loose scripts directly under RootPath (not in user/ or device/) must carry #type.
-    foreach ($file in (Get-ChildItem -LiteralPath $RootPath -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) {
-        $candidates += [pscustomobject]@{ File = $file; FolderType = $null }
+    try {
+        foreach ($file in (Get-ChildItem -LiteralPath $RootPath -Filter '*.ps1' -File -ErrorAction Stop)) {
+            $candidates += [pscustomobject]@{ File = $file; FolderType = $null }
+        }
+    } catch {
+        throw "Could not list the loose scripts in '$RootPath': $($_.Exception.Message)"
     }
 
     $results = @()

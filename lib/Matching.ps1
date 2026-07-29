@@ -2,11 +2,33 @@
 # Content hashing (exact-duplicate detection) and fuzzy string similarity
 # (near-duplicate name/description detection).
 
+function Get-WizardBytesHash {
+    # SHA256 of a byte array, lower-cased hex. Used for content downloaded from
+    # Intune; the local-file side goes through Get-WizardFileHash. Both must
+    # produce the same casing or exact-duplicate detection silently stops working.
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return (($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Get-WizardFileHash {
     # Lower-cased so it compares safely against the hashes GraphOps computes,
     # even if a caller later switches to -ceq or a hashtable lookup.
     param([Parameter(Mandatory)][string]$Path)
-    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    try {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    } catch {
+        # The file was scanned minutes ago, so it can have been moved, deleted or
+        # locked by an editor since. Name it: "access denied" on its own is not
+        # enough to find the culprit in a folder of fifty scripts.
+        throw "Could not read '$Path' to hash it: $($_.Exception.Message). It may have been moved, deleted or locked since the scan started."
+    }
 }
 
 function Get-LevenshteinDistance {

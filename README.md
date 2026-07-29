@@ -151,7 +151,36 @@ unless you pass `-AcceptModuleInstall`.
 
 # Trace every Graph URL, request body and match score while diagnosing a failure:
 ./Deploy-IntuneScripts.ps1 -DryRun -DebugLog Console
+
+# Stop at the first script that fails instead of working through the rest:
+./Deploy-IntuneScripts.ps1 -StopOnError
 ```
+
+### When something fails
+
+A script that fails to deploy does not stop the ones after it. Each failure is
+reported as it happens, listed again in a summary at the end, and the run exits
+non-zero. Pass `-StopOnError` to abandon the run at the first failure instead.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Everything the run set out to deploy succeeded |
+| `1` | The run stopped early: bad arguments, sign-in, a failed pre-flight check, or `-StopOnError` tripping |
+| `2` | The run finished, but one or more individual scripts failed |
+
+Anything that stops the run is also written to stderr, so an unattended caller
+watching only stderr still sees the reason. Some failures leave a script part-way
+changed - created but unassigned, or updated against its old assignments. The
+error message names the script's Intune id and, for updates, the backup file that
+puts it back:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -Restore backups/My-Script_20260728-221500.json
+```
+
+Checks that could half-apply a run are done as pre-flight instead: unresolvable
+group names, duplicate local display names, and contradictory meta comments all
+abort before anything reaches the tenant.
 
 ### Debug logging
 
@@ -159,6 +188,12 @@ unless you pass `-AcceptModuleInstall`.
 `Both` write `logs/wizard-<timestamp>.log` under `-Path`. Enabling it prints
 the build stamp (version plus git short hash, marked `-dirty` for uncommitted
 changes) so a pasted log can be tied to an exact build. `logs/` is gitignored.
+
+Any error that stops the run is written to the log in full - exception type,
+the line that threw, and the call stack - while the console keeps the one-line
+version. Logging is best-effort: if the log file cannot be created or later
+becomes unwritable, the wizard warns once and carries on rather than taking the
+deployment down with it.
 
 ## How assignments are set
 
@@ -185,7 +220,10 @@ the real entry point runs end to end offline against an in-memory tenant. The
 suite covers duplicate resolution (including that a **Skip** decision does not
 fall through into a create), assign-action payload shape, backup/restore
 fidelity for group targets and scope tags, `-DryRun` making no mutating calls,
-and `-Path` validation.
+and `-Path` validation. It also covers the failure paths: a single failing
+script not stopping the rest, `-StopOnError`, each exit code, a tenant that
+withholds a requested scope, corrupt backup files being rejected before any
+Graph call, and fatal errors reaching stderr.
 
 After any change, still confirm against a non-production tenant with `-DryRun`
 first, then for real, checking in the Intune portal (Devices > Scripts) that
@@ -194,4 +232,15 @@ match what you expected.
 
 ## License
 
-Business Source License 1.1 - see [LICENSE](LICENSE).
+Business Source License 1.1 - see [LICENSE](LICENSE). **Not** an open source
+license.
+
+**Internal use only.** Production use is granted solely for administering
+Intune tenants your own organization owns and operates. Using this tool - or a
+derivative of it - against a client, customer, or any other third party's
+tenant, including as part of a managed-services, consulting, or reseller
+engagement, requires a separate written license agreement with the Licensor,
+agreed in advance. Contact the Licensor to arrange one.
+
+Evaluation, development, and testing are unrestricted. The Change Date is
+2030-07-28, after which the work becomes available under Apache 2.0.

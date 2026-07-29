@@ -10,13 +10,30 @@ Parameters
 Licensor:             Ethan Antonio
 Licensed Work:        intune-script-wizard
                        The Licensed Work is (c) 2026 Ethan Antonio
-Additional Use Grant:  You may use, copy, and modify the Licensed Work for
-                       any internal or client-facing purpose, including
-                       running it as part of a managed-services engagement,
-                       provided you do not offer the Licensed Work itself
-                       (or a substantially similar derivative) to third
-                       parties as a standalone, competing product or
-                       hosted/SaaS service.
+Additional Use Grant:  INTERNAL USE ONLY. You may use, copy, and modify the
+                       Licensed Work in production solely to administer
+                       Microsoft Intune tenants owned and operated by your
+                       own organization, for that organization's own internal
+                       purposes.
+
+                       This grant does NOT extend to any use of the Licensed
+                       Work, or of a derivative of it, to deploy, configure,
+                       or otherwise manage a tenant belonging to a client,
+                       customer, affiliate, or any other third party -
+                       including as part of a managed-services, consulting,
+                       reseller, or outsourcing engagement, and whether or
+                       not a fee is charged. Any such use requires a separate
+                       written license agreement with the Licensor, obtained
+                       in advance.
+
+                       This grant also does not permit offering the Licensed
+                       Work, or a substantially similar derivative, to third
+                       parties as a standalone product or as a hosted/SaaS
+                       service.
+
+                       Non-production use - evaluation, development, and
+                       testing - remains permitted under the Terms below
+                       without a separate agreement.
 Change Date:           2030-07-28
 Change License:        Apache License, Version 2.0
 

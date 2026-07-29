@@ -48,3 +48,17 @@
 ### v1.3.0 (2026-07-29)
 
 Added offline e2e test kit in `e2e-tests/` for regression testing against a real dev tenant. The kit generates `.ps1` files that exercise real Intune assignment behavior (group resolution, display names, assignment targets). Run `New-E2ETestSet.ps1` to generate test scripts, then deploy them with `Deploy-IntuneScripts.ps1` against a dev tenant to validate changes visually.
+
+### v1.4.0 (2026-07-28)
+
+1. Added `lib/Errors.ps1` module to define standardized exit codes (0 for success, 1 for fatal failures, 2 for partial failures where some scripts failed) and to extract actionable error messages from Microsoft Graph API responses. Fatal errors now write full diagnostic detail (exception type, stack trace, inner exceptions) to the debug log for faster problem diagnosis.
+
+2. Added `lib/Storage.ps1` module providing atomic JSON file writes: all data is written to a sibling temp file and moved into place as a single filesystem operation, ensuring that backups and the hash cache remain consistent even if the wizard is interrupted mid-write or the system runs out of disk space.
+
+3. Added `-StopOnError` parameter to halt immediately on the first script failure instead of continuing through the remaining scripts. By default the wizard reports failures per-script and exits with code 2; with `-StopOnError` it exits code 1 on the first failure. Both modes now have explicit exit codes so scheduled tasks and CI pipelines can distinguish fatal problems from expected partial failures.
+
+4. Enhanced backup validation in `lib/Backup.ps1`: backups are now checked for required fields before any restore attempt, scripts are validated to have non-empty content before being changed, backup filenames are sanitized to prevent filesystem issues, and all backup writes now use atomic storage to prevent corruption.
+
+5. Improved library loading in `Deploy-IntuneScripts.ps1` with validation that all required library files exist before any execution begins, providing clear guidance if the wizard folder is incomplete or corrupted.
+
+6. Updated help text to document exit codes and clarify behavior in non-interactive runs (pipelines, scheduled tasks) when fuzzy matching encounters ambiguity.

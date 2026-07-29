@@ -10,8 +10,13 @@ function Add-StubCall {
 }
 
 function Get-MgContext {
+    # Mirrors the real cmdlet: the context reports the scopes that were actually
+    # granted, which is the base scope plus whatever a Connect-MgGraph call has
+    # added during this run.
+    $state = Get-StubState
+    $scopes = @('DeviceManagementConfiguration.ReadWrite.All') + @($state['grantedScopes'])
     [pscustomobject]@{
-        Scopes   = @('DeviceManagementConfiguration.ReadWrite.All')
+        Scopes   = @($scopes | Where-Object { $_ } | Select-Object -Unique)
         TenantId = 'stub-tenant'
         Account  = 'stub@example.com'
         AuthType = 'Delegated'
@@ -21,6 +26,16 @@ function Get-MgContext {
 function Connect-MgGraph {
     param([string[]]$Scopes, [switch]$NoWelcome)
     Add-StubCall 'Connect-MgGraph' @{ scopes = $Scopes }
+
+    $state = Get-StubState
+    if ($state['failConnect']) { throw "Stub: sign-in failed ($($state['failConnect']))" }
+
+    # 'denyScopes' models a tenant whose admin consent policy hands back fewer
+    # scopes than were asked for.
+    $denied = @($state['denyScopes'])
+    $state['grantedScopes'] = @(@($state['grantedScopes']) + @($Scopes) |
+        Where-Object { $_ -and $_ -notin $denied } | Select-Object -Unique)
+    Set-StubState $state
 }
 
 function Invoke-MgGraphRequest {

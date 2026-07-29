@@ -103,11 +103,14 @@ Check 'Skip leaves tenant script count unchanged'         ($r.State['scripts'].C
 
 # ---------------------------------------------------------------- Test 2
 # Empty tenant: both scripts created, each with the correct assign target.
+# -OnFuzzyMatch is required, not incidental: 'Script-A' and 'Script-B' are 88%
+# similar, so the second one fuzzy-matches the first the moment it is created.
 $ws = New-Workspace -Scripts @(
     @{ Rel = 'device/Script-A.ps1'; Body = $bodyA },
     @{ Rel = 'user/Script-B.ps1';   Body = $bodyB }
 )
-$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() }
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() } -WizardArgs @('-OnFuzzyMatch', 'SideBySide')
+Check 'Successful run exits 0' ($r.ExitCode -eq 0) "got $($r.ExitCode)"
 $created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
 Check 'Both scripts created' ($created.Count -eq 2) "got $($created.Count)"
 $runAs = ($created | ForEach-Object { $_['data']['runAsAccount'] }) | Sort-Object
@@ -217,9 +220,15 @@ $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() } -WizardArgs @('-DryR
 $log = Get-ChildItem -LiteralPath (Join-Path $ws 'logs') -Filter '*.log' -ErrorAction SilentlyContinue | Select-Object -First 1
 Check 'Debug log file created' ($null -ne $log) $r.Output
 if ($log) {
+    # The expected version is read from the source rather than hardcoded: the
+    # assertion is "the log carries the build stamp", not "the version is 1.2.3",
+    # and a hardcoded copy silently rots every time the version is bumped.
+    $versionLine = Select-String -Path (Join-Path $repo 'lib/Logging.ps1') -Pattern "WizardVersion\s*=\s*'([^']+)'"
+    $wizardVersion = $versionLine.Matches[0].Groups[1].Value
     $logText = Get-Content -LiteralPath $log.FullName -Raw
-    Check 'Debug log carries build stamp' ($logText -match 'build 0\.2\.0\+') $logText
+    Check 'Debug log carries build stamp' ($logText -match "build $([regex]::Escape($wizardVersion))\+") $logText
     Check 'Debug log traces Graph calls'  ($logText -match 'Graph context') $logText
+    Check 'Debug log records the exit code' ($logText -match 'Run finished with exit code 0') $logText
 }
 
 # ---------------------------------------------------------------- Test 9
@@ -372,6 +381,112 @@ $created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagemen
 Check '-AllowTypeOverride honours the #type: comment' (
     $created.Count -eq 1 -and $created[0]['data']['runAsAccount'] -eq 'user'
 ) "got $($created | ConvertTo-Json -Compress -Depth 5)"
+
+# --------------------------------------------------------------- Test 19
+# A single script failing does not stop the others, and the run exits 2.
+$ws = New-Workspace -Scripts @(
+    @{ Rel = 'device/Doomed.ps1';  Body = $bodyA }
+    @{ Rel = 'device/Healthy.ps1'; Body = $bodyB }
+)
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); failCreate = 'Doomed' }
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check 'Failing script does not stop the run' (
+    @($r.State['scripts'] | Where-Object { $_['displayName'] -eq 'Healthy' }).Count -eq 1
+) ($r.Output)
+Check 'Both scripts were attempted'   ($created.Count -eq 2) "got $($created.Count)"
+Check 'Partial failure exits 2'       ($r.ExitCode -eq 2) "got $($r.ExitCode)"
+Check 'Failure is named in a summary' ($r.Output -match '(?s)Failed:.*Doomed') $r.Output
+Check 'Graph error text is surfaced'  ($r.Output -match 'BadRequest') $r.Output
+
+# --------------------------------------------------------------- Test 20
+# -StopOnError abandons the rest of the run and exits 1 instead. The doomed
+# script is put in user/ because Find-WizardScripts scans user/ before device/,
+# so it is guaranteed to be the one attempted first.
+$ws = New-Workspace -Scripts @(
+    @{ Rel = 'user/Doomed.ps1';    Body = $bodyA }
+    @{ Rel = 'device/Healthy.ps1'; Body = $bodyB }
+)
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); failCreate = 'Doomed' } -WizardArgs @('-StopOnError')
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check '-StopOnError stops after the first failure' ($created.Count -eq 1) "got $($created.Count)"
+Check '-StopOnError exits 1'                       ($r.ExitCode -eq 1) "got $($r.ExitCode)"
+Check '-StopOnError says it stopped early'         ($r.Output -match 'not attempted') $r.Output
+
+# --------------------------------------------------------------- Test 21
+# Fatal pre-flight failures exit 1 and reach stderr, not just the host.
+$env:PSModulePath = $stubs
+# Stderr goes to its own file: merging it into the success stream would prove
+# only that the message exists somewhere, not that an unattended caller watching
+# stderr alone would see it.
+$errFile = Join-Path $scratch 'fatal-stderr.txt'
+& pwsh -NoProfile -File (Join-Path $repo 'Deploy-IntuneScripts.ps1') `
+    -Path (Join-Path $scratch 'does-not-exist') 2>$errFile | Out-Null
+$code = $LASTEXITCODE
+$stderr = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+Check 'Fatal error exits 1'          ($code -eq 1) "got $code"
+Check 'Fatal error reaches stderr'   ($stderr -match 'does not exist or is not a folder') "[$stderr]"
+
+# --------------------------------------------------------------- Test 22
+# A tenant that withholds a requested scope is caught at sign-in, not later.
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/By-Name.ps1'; Body = "#group:`"Helpdesk Laptops`"`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{
+    scripts = @(); groups = $directory; denyScopes = @('GroupMember.Read.All')
+}
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check 'Ungranted scope aborts the run' ($r.Output -match 'did not grant') $r.Output
+Check 'Ungranted scope deploys nothing' ($created.Count -eq 0) "got $($created.Count)"
+Check 'Ungranted scope exits 1'         ($r.ExitCode -eq 1) "got $($r.ExitCode)"
+
+# --------------------------------------------------------------- Test 23
+# A near-duplicate with no -OnFuzzyMatch must fail in a session that cannot
+# prompt, rather than silently skipping or silently creating a duplicate.
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Script-A.ps1'; Body = "$bodyA# v2`n" })
+$state = @{ groups = @(); scripts = @(@{
+    id = 'existing-fuzzy'; displayName = 'Script-B'; description = ''
+    fileName = 'Script-B.ps1'
+    scriptContent = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bodyB))
+    runAsAccount = 'system'; enforceSignatureCheck = $false; runAs32Bit = $true
+    roleScopeTagIds = @('0'); lastModifiedDateTime = (Get-Date).ToString('o'); assignments = @()
+}) }
+$r = Invoke-Wizard -Workspace $ws -State $state
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check 'Unattended fuzzy match fails loudly' ($r.Output -match 'cannot prompt') $r.Output
+Check 'Unattended fuzzy match creates nothing' ($created.Count -eq 0) "got $($created.Count)"
+
+# --------------------------------------------------------------- Test 24
+# A corrupt or hand-edited backup is rejected before anything reaches Graph.
+$ws = New-Workspace -Scripts @()
+$badBackups = @(
+    @{ Name = 'not-json';     Content = 'this is not json at all'; Expect = 'Could not parse' }
+    @{ Name = 'missing-keys'; Content = '{"SchemaVersion":2,"Id":"x"}'; Expect = 'missing required field' }
+    @{ Name = 'bad-base64';   Expect = 'not valid base64'
+       Content = '{"SchemaVersion":2,"Id":"x","DisplayName":"X","FileName":"x.ps1","RunAsAccount":"system","ScriptContent":"not base 64!!"}' }
+    @{ Name = 'bad-runas';    Expect = "accepts only 'user' or 'system'"
+       Content = '{"SchemaVersion":2,"Id":"x","DisplayName":"X","FileName":"x.ps1","RunAsAccount":"root","ScriptContent":"YQ=="}' }
+)
+foreach ($case in $badBackups) {
+    $file = Join-Path $ws "$($case.Name).json"
+    Set-Content -LiteralPath $file -Value $case.Content
+    $env:WIZTEST_STATE = Join-Path $ws '_state.json'
+    $env:WIZTEST_CALLS = Join-Path $ws '_calls.jsonl'
+    (@{ scripts = @() } | ConvertTo-Json) | Set-Content -LiteralPath $env:WIZTEST_STATE
+    Set-Content -LiteralPath $env:WIZTEST_CALLS -Value '' -NoNewline
+    $env:PSModulePath = $stubs
+    $out = & pwsh -NoProfile -File (Join-Path $repo 'Deploy-IntuneScripts.ps1') -Path $ws -Restore $file 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $calls = @(Get-Content -LiteralPath $env:WIZTEST_CALLS | Where-Object { $_ })
+    Check "Bad backup ($($case.Name)) is rejected" ($out -match [regex]::Escape($case.Expect)) $out
+    Check "Bad backup ($($case.Name)) exits 1"     ($code -eq 1) "got $code"
+    Check "Bad backup ($($case.Name)) writes nothing" (
+        -not (@($calls) -match 'MgBetaDeviceManagementScript')
+    ) ($calls -join ' | ')
+}
+
+# --------------------------------------------------------------- Test 25
+# -DryRun with -Restore is a contradiction and must not touch the tenant.
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() } -WizardArgs @('-Restore', 'anything.json', '-DryRun')
+Check '-DryRun with -Restore is refused' ($r.Output -match 'cannot be combined with -Restore') $r.Output
+Check '-DryRun with -Restore exits 1'    ($r.ExitCode -eq 1) "got $($r.ExitCode)"
 
 Write-Host ""
 Write-Host "$pass passed, $fail failed" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

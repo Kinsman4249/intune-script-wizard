@@ -10,11 +10,26 @@ function Backup-WizardScript {
         [Parameter(Mandatory)][string]$BackupDir
     )
 
-    if (-not (Test-Path -LiteralPath $BackupDir)) {
-        New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+    try {
+        if (-not (Test-Path -LiteralPath $BackupDir)) {
+            New-Item -ItemType Directory -Path $BackupDir -Force -ErrorAction Stop | Out-Null
+        }
+    } catch {
+        throw "Could not create the backup folder '$BackupDir': $($_.Exception.Message). No script is changed without a backup, so the run stops here."
     }
 
-    $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+    try {
+        $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+    } catch {
+        throw "Could not read script $Id to back it up: $(Get-WizardErrorSummary -ErrorRecord $_)"
+    }
+    if (-not $full -or -not $full.Id) {
+        throw "Script $Id could not be backed up: the tenant returned nothing for it. It may have been deleted since the run started."
+    }
+    if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) {
+        throw "Script $Id ('$($full.DisplayName)') came back without any content, so a backup of it would be unrestorable. Refusing to change it."
+    }
+
     $assignments = @(
         Get-WizardScriptAssignments -Id $Id |
             ForEach-Object { ConvertTo-WizardAssignmentPayload -Assignment $_ } |
@@ -38,10 +53,24 @@ function Backup-WizardScript {
         BackedUpAt             = (Get-Date).ToString('o')
     }
 
+    # An empty or all-punctuation display name would collapse to '' and produce a
+    # file called '_20260728-221500.json'; give it something searchable instead.
     $safeName = ($full.DisplayName -replace '[^a-zA-Z0-9._-]', '_')
+    if ([string]::IsNullOrWhiteSpace($safeName.Replace('_', ''))) { $safeName = "script-$($full.Id)" }
+    # Windows caps a path component at 255 characters and Intune allows long
+    # display names, so leave room for the timestamp and extension.
+    if ($safeName.Length -gt 100) { $safeName = $safeName.Substring(0, 100) }
+
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
     $path = Join-Path $BackupDir "$safeName`_$stamp.json"
-    $backup | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path
+
+    try {
+        # Atomic: a backup that exists must be complete, because the update that
+        # follows is about to rely on it.
+        Save-WizardJsonFile -Path $path -Value $backup -Depth 10
+    } catch {
+        throw "Could not write the backup for '$($full.DisplayName)' to '$path': $($_.Exception.Message). Nothing was changed in the tenant."
+    }
     Write-Host "  Backed up existing '$($full.DisplayName)' -> $path" -ForegroundColor DarkGray
     Write-WizardDebug "Backup wrote $($assignments.Count) assignment(s), $(@($full.RoleScopeTagIds).Count) scope tag(s)"
     return $path
@@ -82,6 +111,42 @@ function Get-WizardRestoreAssignments {
     return $result
 }
 
+function Test-WizardBackupShape {
+    # Validates a backup before any of it reaches Graph. A backup is an ordinary
+    # JSON file in a folder people poke around in, so "hand-edited and broken" is
+    # a normal state for one to be in - and half-restoring a script is worse than
+    # not starting.
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Backup,
+        [Parameter(Mandatory)][string]$Source
+    )
+
+    if ($Backup -isnot [hashtable]) {
+        throw "'$Source' is not a wizard backup: expected a JSON object, got $(if ($null -eq $Backup) { 'nothing' } else { $Backup.GetType().Name })."
+    }
+
+    $required = @('Id', 'DisplayName', 'FileName', 'ScriptContent', 'RunAsAccount')
+    $absent = @($required | Where-Object { -not $Backup.ContainsKey($_) -or [string]::IsNullOrWhiteSpace([string]$Backup[$_]) })
+    if ($absent.Count -gt 0) {
+        throw "'$Source' is missing required field(s): $($absent -join ', '). It is not a usable backup."
+    }
+
+    if ($Backup['RunAsAccount'] -notin @('user', 'system')) {
+        throw "'$Source' has RunAsAccount '$($Backup['RunAsAccount'])'; Intune accepts only 'user' or 'system'."
+    }
+
+    try {
+        $bytes = [System.Convert]::FromBase64String($Backup['ScriptContent'])
+    } catch {
+        throw "'$Source' has a ScriptContent field that is not valid base64, so the original script cannot be reconstructed from it."
+    }
+    if ($bytes.Length -eq 0) {
+        throw "'$Source' decodes to an empty script. Intune rejects empty script content, so there is nothing to restore."
+    }
+
+    return $bytes
+}
+
 function Restore-WizardBackup {
     # One-command restore of a backup produced by Backup-WizardScript.
     param([Parameter(Mandatory)][string]$BackupFile)
@@ -92,14 +157,20 @@ function Restore-WizardBackup {
 
     # -AsHashtable keeps everything as plain hashtables, so nested assignment
     # targets can be posted straight back without PSCustomObject conversions.
-    $backup = Get-Content -LiteralPath $BackupFile -Raw | ConvertFrom-Json -AsHashtable
-    Write-WizardDebug "Restoring from $BackupFile (schema $($backup['SchemaVersion']))"
+    try {
+        $backup = Read-WizardJsonFile -Path $BackupFile -AsHashtable
+    } catch {
+        throw "Could not parse '$BackupFile' as JSON: $($_.Exception.Message). If it was edited by hand, check for a trailing comma or a truncated file."
+    }
+
+    $bytes = Test-WizardBackupShape -Backup $backup -Source $BackupFile
+    Write-WizardDebug "Restoring from $BackupFile (schema $($backup['SchemaVersion']), $($bytes.Length) content bytes)"
 
     # The temp file name is generated, never taken from the backup: FileName is
     # attacker-controlled data in a hand-edited backup and could contain path
     # separators or '..'. Only Graph gets the original name, via -FileName.
     $tempScript = Join-Path ([System.IO.Path]::GetTempPath()) "intune-wizard-$([guid]::NewGuid().ToString('N')).ps1"
-    [System.IO.File]::WriteAllBytes($tempScript, [System.Convert]::FromBase64String($backup['ScriptContent']))
+    [System.IO.File]::WriteAllBytes($tempScript, $bytes)
 
     try {
         $exists = $null
@@ -110,35 +181,50 @@ function Restore-WizardBackup {
 
         if ($exists) {
             Write-Host "Restoring '$($backup['DisplayName'])' over existing script $($backup['Id'])..."
-            Update-MgBetaDeviceManagementScript `
-                -DeviceManagementScriptId $backup['Id'] `
-                -DisplayName $backup['DisplayName'] `
-                -Description $backup['Description'] `
-                -FileName $backup['FileName'] `
-                -ScriptContentInputFile $tempScript `
-                -RunAsAccount $backup['RunAsAccount'] `
-                -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
-                -RunAs32Bit:$backup['RunAs32Bit'] `
-                -RoleScopeTagIds $roleScopeTagIds | Out-Null
+            try {
+                Update-MgBetaDeviceManagementScript `
+                    -DeviceManagementScriptId $backup['Id'] `
+                    -DisplayName $backup['DisplayName'] `
+                    -Description $backup['Description'] `
+                    -FileName $backup['FileName'] `
+                    -ScriptContentInputFile $tempScript `
+                    -RunAsAccount $backup['RunAsAccount'] `
+                    -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
+                    -RunAs32Bit:$backup['RunAs32Bit'] `
+                    -RoleScopeTagIds $roleScopeTagIds | Out-Null
+            } catch {
+                throw "Restoring '$($backup['DisplayName'])' over $($backup['Id']) failed: $(Get-WizardErrorSummary -ErrorRecord $_). The script is unchanged or partly changed; the backup file is intact and can be retried."
+            }
             $targetId = $backup['Id']
         } else {
             Write-Host "Original script $($backup['Id']) no longer exists - recreating '$($backup['DisplayName'])' (new Id will be assigned)..."
-            $created = New-MgBetaDeviceManagementScript `
-                -DisplayName $backup['DisplayName'] `
-                -Description $backup['Description'] `
-                -FileName $backup['FileName'] `
-                -ScriptContentInputFile $tempScript `
-                -RunAsAccount $backup['RunAsAccount'] `
-                -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
-                -RunAs32Bit:$backup['RunAs32Bit'] `
-                -RoleScopeTagIds $roleScopeTagIds
+            try {
+                $created = New-MgBetaDeviceManagementScript `
+                    -DisplayName $backup['DisplayName'] `
+                    -Description $backup['Description'] `
+                    -FileName $backup['FileName'] `
+                    -ScriptContentInputFile $tempScript `
+                    -RunAsAccount $backup['RunAsAccount'] `
+                    -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
+                    -RunAs32Bit:$backup['RunAs32Bit'] `
+                    -RoleScopeTagIds $roleScopeTagIds
+            } catch {
+                throw "Recreating '$($backup['DisplayName'])' from the backup failed: $(Get-WizardErrorSummary -ErrorRecord $_)"
+            }
+            if (-not $created -or -not $created.Id) {
+                throw "Recreating '$($backup['DisplayName'])' returned no script id, so its assignments could not be restored. Check the Intune portal before retrying."
+            }
             $targetId = $created.Id
         }
 
         # One full replacement: whatever the backup held becomes the whole set.
         # @(...) as above - a backup with no assignments must still post an
         # empty set rather than collapsing to $null.
-        Set-WizardWholeAssignment -Id $targetId -Assignments @(Get-WizardRestoreAssignments -Backup $backup)
+        try {
+            Set-WizardWholeAssignment -Id $targetId -Assignments @(Get-WizardRestoreAssignments -Backup $backup)
+        } catch {
+            throw "'$($backup['DisplayName'])' ($targetId) was restored but its assignments were not: $(Get-WizardErrorSummary -ErrorRecord $_). The restored content is live against whatever assignments the script had before."
+        }
 
         Write-Host "Restore complete: $targetId" -ForegroundColor Green
         return $targetId

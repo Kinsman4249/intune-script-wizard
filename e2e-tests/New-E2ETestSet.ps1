@@ -69,7 +69,7 @@ if (-not $metadata['answers']['confirmDevTenant']) {
           "once you've confirmed the -Path you'll run Deploy-IntuneScripts.ps1 against points at a DEV tenant, then re-run this script."
 }
 $runPrefix = [string]$metadata['answers']['runPrefix']
-if ([string]::IsNullOrWhiteSpace($runPrefix)) { $runPrefix = 'E2E' }
+if ([string]::IsNullOrWhiteSpace($runPrefix)) { $runPrefix = 'ZZZ-E2E-TEST-DELETE-ME' }
 
 function Test-HasValue {
     param([string]$Value)

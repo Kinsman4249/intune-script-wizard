@@ -1,8 +1,8 @@
 {
   "answers": {
     "confirmDevTenant": false,
-    "runPrefix": "E2E",
-    "notes": "This kit generates scripts that New-E2ETestSet.ps1 does NOT deploy itself - you run Deploy-IntuneScripts.ps1 against the generated folders yourself, against a DEV tenant. confirmDevTenant is a safety gate: New-E2ETestSet.ps1 refuses to generate anything until you set it to true, as confirmation that you understand this and that -Path in your own Deploy-IntuneScripts.ps1 run will point at a dev tenant's script folder, not production. runPrefix is stamped on every generated script's Intune display name; bump it (e.g. E2E2) to start a fresh, non-colliding batch instead of updating the previous one."
+    "runPrefix": "ZZZ-E2E-TEST-DELETE-ME",
+    "notes": "This kit generates scripts that New-E2ETestSet.ps1 does NOT deploy itself - you run Deploy-IntuneScripts.ps1 against the generated folders yourself, against a DEV tenant. confirmDevTenant is a safety gate: New-E2ETestSet.ps1 refuses to generate anything until you set it to true, as confirmation that you understand this and that -Path in your own Deploy-IntuneScripts.ps1 run will point at a dev tenant's script folder, not production. runPrefix is stamped on every generated script's Intune display name AND is what Remove-E2ETestSet.ps1 matches on to clean up afterwards - keep it deliberately loud (the ZZZ- sorts it to the bottom of an alphabetical script list too) so leftover test scripts are obvious at a glance if cleanup is ever skipped or fails. Bump it (e.g. ZZZ-E2E-TEST-DELETE-ME-2) to start a fresh, non-colliding batch instead of updating the previous one - just remember Remove-E2ETestSet.ps1 only matches the CURRENT runPrefix, so clean up the old batch under its own prefix before changing this."
   },
   "groups": {
     "include": {
