@@ -44,3 +44,7 @@
 2. Added `-AllowTypeOverride` parameter to `Deploy-IntuneScripts.ps1` to apply the override behavior to all scripts in a single run, without adding `#typeoverride:yes` to each one.
 
 3. Added four new tests covering folder-vs-comment conflict resolution, `#typeoverride:yes` behavior, and `-AllowTypeOverride` flag handling.
+
+### v1.3.0 (2026-07-29)
+
+Added offline e2e test kit in `e2e-tests/` for regression testing against a real dev tenant. The kit generates `.ps1` files that exercise real Intune assignment behavior (group resolution, display names, assignment targets). Run `New-E2ETestSet.ps1` to generate test scripts, then deploy them with `Deploy-IntuneScripts.ps1` against a dev tenant to validate changes visually.
