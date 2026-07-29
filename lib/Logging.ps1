@@ -19,16 +19,27 @@ $script:DebugFilePath  = $null
 # once instead of on every line for the rest of the run.
 $script:DebugFileBroken = $false
 
+# The "script:" prefix above makes these variables script-scoped: they live for
+# as long as this .ps1 file is loaded and can be read/written by any function
+# defined in it (like a shared setting), instead of disappearing when a
+# function returns the way an ordinary local variable would.
+
+# Reports the tool's version, optionally with a git commit hash, for debug logs.
 function Get-WizardBuildStamp {
     # Version plus the short commit hash when the tool is running from a git
     # checkout, e.g. "1.3.0+5571aff" or "1.3.0+nogit" for a copied-out folder.
     $suffix = 'nogit'
+    # try/catch: run the risky code in "try", and if it throws an error, jump
+    # to "catch" instead of crashing the whole script. Here, any failure just
+    # means git isn't available, so we quietly keep the 'nogit' default.
     try {
         $root = Split-Path -Parent $PSScriptRoot
         # $LASTEXITCODE is cleared first: if git is missing, the call below
         # throws before setting it, and a stale value from an earlier native
         # command would otherwise be read as success.
         $global:LASTEXITCODE = 0
+        # The "&" is PowerShell's call operator, used here to run the external
+        # git.exe program and capture what it prints as text.
         $hash = & git -C $root rev-parse --short HEAD 2>$null
         if ($LASTEXITCODE -eq 0 -and $hash) {
             $suffix = "$hash".Trim()
@@ -42,14 +53,22 @@ function Get-WizardBuildStamp {
     return "$script:WizardVersion+$suffix"
 }
 
+# Turns debug logging on/off and picks console, file, or both, based on $Mode.
+# Call this once near the start of a run before any Write-WizardDebug calls.
 function Initialize-WizardLogging {
+    # A param() block declares this function's inputs. Each one below becomes
+    # a variable ($Mode, $LogRoot) usable inside the function body.
     param(
+        # [ValidateSet(...)] restricts $Mode to exactly these four strings;
+        # PowerShell rejects the call up front if anything else is passed.
         [ValidateSet('None', 'Console', 'File', 'Both')]
         [string]$Mode = 'None',
         # Where a logs/ folder is created when file logging is requested.
         [string]$LogRoot
     )
 
+    # "-in @(...)" checks whether $Mode is one of the values in that array
+    # (a comma-free list written with @() ), giving a true/false result.
     $script:DebugToConsole  = $Mode -in @('Console', 'Both')
     $script:DebugToFile     = $Mode -in @('File', 'Both')
     $script:DebugFileBroken = $false
@@ -86,14 +105,28 @@ function Initialize-WizardLogging {
     }
 }
 
+# Writes one debug line to the console and/or log file, depending on what
+# Initialize-WizardLogging turned on. This is the function the rest of the
+# tool calls whenever it wants to trace what it's doing.
 function Write-WizardDebug {
+    # [Parameter(Mandatory)] means the caller must supply -Message or
+    # PowerShell stops and prompts/errors instead of running with it blank.
+    # [AllowEmptyString()] still permits an empty "" string, just not a
+    # missing one entirely.
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Message)
 
+    # Bail out early (do nothing) if neither console nor file logging is on,
+    # so callers can call this freely without checking themselves every time.
     if (-not ($script:DebugToConsole -or $script:DebugToFile)) { return }
 
     # Multi-line messages (an error detail block) get one timestamp per line so
     # the log stays greppable.
     $stamp = (Get-Date).ToString('HH:mm:ss.fff')
+    # -split breaks the message into an array of lines on any line-ending
+    # style (`r`n is Windows-style CRLF, written as a backtick-escaped
+    # sequence). The pipe "|" then feeds each line into ForEach-Object, which
+    # runs its script block once per item; inside that block, $_ refers to
+    # the current item being processed.
     $lines = @($Message -split "`r?`n" | ForEach-Object { "[$stamp] $_" })
 
     if ($script:DebugToConsole) {
@@ -111,15 +144,19 @@ function Write-WizardDebug {
     }
 }
 
+# Returns true if either console or file debug logging is currently active.
 function Test-WizardDebugEnabled {
     # Lets callers skip building an expensive debug string when nothing consumes it.
     return ($script:DebugToConsole -or $script:DebugToFile)
 }
 
+# Returns the current debug log file's path (or $null if file logging is off).
 function Get-WizardLogPath {
     return $script:DebugFilePath
 }
 
+# Writes a final "run finished" line and, if logging to a file, prints its
+# path so the user knows where to look afterward.
 function Close-WizardLogging {
     # Called from the wizard's outermost finally, including on a fatal error, so
     # the log path is the last thing on screen when someone needs to go read it.

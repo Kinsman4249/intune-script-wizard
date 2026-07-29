@@ -1,5 +1,9 @@
 # Change history
 
+### v1.4.1 (2026-07-28)
+
+Added comprehensive code comments and documentation throughout `Deploy-IntuneScripts.ps1` and all library modules (`lib/*.ps1`). Comments explain algorithm choices (e.g., Levenshtein distance, atomic file writes), PowerShell idioms, error handling invariants, and the overall control flow. This improves code maintainability and onboarding for future contributors without changing any functional behavior.
+
 ### v1.0.0 (initial implementation)
 
 1. Built the core wizard: `Deploy-IntuneScripts.ps1` scans `user/` and `device/` subfolders for `.ps1` files and deploys each via Microsoft Graph beta `Microsoft.Graph.Beta.DeviceManagement`. Scripts under `user/` run with logged-on credentials; scripts under `device/` run as system.

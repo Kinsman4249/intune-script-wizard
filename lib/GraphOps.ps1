@@ -7,6 +7,8 @@
 # stable. Assignments are deliberately NOT done with per-item cmdlets - see the
 # comment above Set-WizardWholeAssignment for why.
 
+# "Scopes" are the specific permissions this app asks the signed-in user (or
+# admin) to grant, e.g. "let me read and write Intune device management config".
 $script:RequiredScopes = @('DeviceManagementConfiguration.ReadWrite.All')
 
 # Only requested when at least one script names a group by display name rather
@@ -19,19 +21,30 @@ $script:GroupReadScope = 'GroupMember.Read.All'
 # 21Vianet without any per-cloud base URL of our own.
 $script:ScriptsUri = '/beta/deviceManagement/deviceManagementScripts'
 
+# Signs the current PowerShell session in to Microsoft Graph, requesting only
+# the permission scopes this run actually needs.
 function Connect-WizardGraph {
+    # param() declares this function's inputs. Each [type] before a name is a
+    # type constraint; [string[]] means "an array of strings".
     param(
         # Extra scopes needed by this particular run, e.g. the directory read
         # used to turn a #group:"Name" into an object id.
         [string[]]$AdditionalScopes = @()
     )
 
+    # Combine the always-needed scopes with any extra ones, then drop duplicates.
     $scopes = @($script:RequiredScopes) + @($AdditionalScopes) | Select-Object -Unique
 
+    # try/catch runs the try block, and if anything inside throws an error, jumps
+    # to catch instead of crashing the whole script.
     try {
+        # Get-MgContext returns details of an existing Graph sign-in, or nothing
+        # if there isn't one yet.
         $context = Get-MgContext
         if (-not $context -or ($scopes | Where-Object { $_ -notin $context.Scopes })) {
             Write-WizardDebug "Connecting to Graph with scopes: $($scopes -join ', ')"
+            # Connect-MgGraph is the SDK cmdlet that opens the sign-in flow
+            # (browser or device code) and establishes the Graph session.
             Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
         }
     } catch {
@@ -63,19 +76,30 @@ function Resolve-WizardGroupName {
     # Turns a group display name into its object id. Exact match only; a name
     # that matches zero or more than one group is an error rather than a guess,
     # because guessing here silently targets the wrong set of machines.
+    # [Parameter(Mandatory)] means the caller must supply -Name or PowerShell
+    # will stop and prompt for it.
     param([Parameter(Mandatory)][string]$Name)
 
     # OData string literals escape a single quote by doubling it.
     $literal = $Name.Replace("'", "''")
+    # OData is the query language Graph uses in URLs, e.g. $filter=... below
+    # is like a "WHERE" clause. EscapeDataString URL-encodes it so spaces and
+    # quotes don't break the request.
     $filter = [uri]::EscapeDataString("displayName eq '$literal'")
+    # $select limits which fields come back, keeping the response small.
     $uri = '/v1.0/groups?$filter=' + $filter + '&$select=id,displayName'
 
     Write-WizardDebug "GET $uri"
     try {
+        # Invoke-MgGraphRequest is a low-level call: it hits the Graph REST API
+        # directly with whatever URI/method you give it, rather than going
+        # through a typed cmdlet. -OutputType Hashtable gets back plain
+        # key/value data instead of a strongly-typed .NET object.
         $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
     } catch {
         throw "Could not look up group '$Name' in Entra ID: $(Get-WizardErrorSummary -ErrorRecord $_). This needs the $script:GroupReadScope scope; if consent was declined, use the group's object GUID in #group: instead."
     }
+    # Graph list responses wrap results in a 'value' array under that key.
     $matched = @($response['value'])
 
     if ($matched.Count -eq 0) {
@@ -97,11 +121,15 @@ function Resolve-WizardGroupReferences {
     # once each per run even when several scripts share a group.
     param([Parameter(Mandatory)][AllowEmptyCollection()][array]$Scripts)
 
+    # A hashtable used as a simple cache: group name -> already-resolved id.
     $cache = @{}
 
+    # A scriptblock is a chunk of code stored in a variable, like a small
+    # inline function. It's defined once here and invoked below with '& $resolve'.
     $resolve = {
         param([string]$Ref)
         $parsed = [guid]::Empty
+        # If the reference already looks like a GUID, no lookup is needed.
         if ([guid]::TryParse($Ref, [ref]$parsed)) { return $parsed.ToString() }
         if (-not $cache.ContainsKey($Ref)) { $cache[$Ref] = Resolve-WizardGroupName -Name $Ref }
         return $cache[$Ref]
@@ -137,7 +165,11 @@ function Test-WizardNeedsGroupScope {
     return $false
 }
 
+# Maps our simple 'user'/'device' choice to the Graph @odata.type name used
+# when no specific group is targeted (i.e. "assign to everyone").
 function Get-WizardAssignmentTargetType {
+    # ValidateSet restricts the parameter to only these two values; PowerShell
+    # rejects anything else before the function body even runs.
     param([Parameter(Mandatory)][ValidateSet('user', 'device')][string]$Type)
     if ($Type -eq 'user') { 'allLicensedUsersAssignmentTarget' } else { 'allDevicesAssignmentTarget' }
 }
@@ -146,6 +178,8 @@ function Get-WizardExistingScripts {
     # Returns all existing deviceManagementScripts with a content SHA256 hash,
     # using a local cache (keyed by LastModifiedDateTime) so unchanged scripts
     # don't need their content re-downloaded on every run.
+    # (deviceManagementScript is Intune's Graph object type for a PowerShell
+    # script uploaded for devices to run.)
     param(
         [Parameter(Mandatory)][string]$CachePath
     )
@@ -166,6 +200,10 @@ function Get-WizardExistingScripts {
     }
 
     try {
+        # A typed SDK cmdlet (as opposed to Invoke-MgGraphRequest above): it
+        # knows the deviceManagementScript shape and returns .NET objects.
+        # -All follows pagination automatically; -Property limits which fields
+        # come back, so full script content isn't downloaded for every item.
         $existing = Get-MgBetaDeviceManagementScript -All -Property id, displayName, description, lastModifiedDateTime
     } catch {
         throw "Could not read the existing scripts from Intune: $(Get-WizardErrorSummary -ErrorRecord $_). Without that list the wizard cannot tell a new script from an existing one, so it will not deploy anything."
@@ -191,6 +229,10 @@ function Get-WizardExistingScripts {
             $hash = $null
             try {
                 Write-WizardDebug "  downloading content for $($item.Id) '$($item.DisplayName)'"
+                # This time asking specifically for scriptContent, which Graph
+                # stores as a base64-encoded string (text-safe encoding of the
+                # raw script bytes) - it has to be decoded back to bytes before
+                # it can be hashed or compared to a local file.
                 $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
                 if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) {
                     throw "the tenant returned no script content"
@@ -234,6 +276,9 @@ function Get-WizardScriptAssignments {
     # Bounded so a service that keeps handing back a nextLink cannot spin here
     # forever. An assignment set large enough to hit this does not exist.
     $page = 0
+    # Graph paginates large result sets: a response can include an
+    # '@odata.nextLink' URI pointing to the next page instead of returning
+    # everything at once. Looping until there's no nextLink collects it all.
     while ($uri -and $page -lt 100) {
         Write-WizardDebug "GET $uri"
         try {
@@ -283,6 +328,9 @@ function Set-WizardWholeAssignment {
         [Parameter(Mandatory)][AllowEmptyCollection()][array]$Assignments
     )
 
+    # Build a hashtable matching the JSON shape the 'assign' action expects,
+    # then serialize it to a JSON string. -Depth 10 avoids ConvertTo-Json's
+    # default depth limit truncating nested objects like assignment targets.
     $body = @{ deviceManagementScriptAssignments = @($Assignments) }
     $json = $body | ConvertTo-Json -Depth 10
     $uri = "$script:ScriptsUri/$Id/assign"
@@ -290,6 +338,8 @@ function Set-WizardWholeAssignment {
     Write-WizardDebug "POST $uri"
     Write-WizardDebug "  body: $json"
     try {
+        # POST sends data to the server (as opposed to GET, which only reads).
+        # Out-Null discards the response since nothing here needs it.
         Invoke-MgGraphRequest -Method POST -Uri $uri -Body $json -ContentType 'application/json' | Out-Null
     } catch {
         # A 400 here is almost always a group id the tenant does not recognise,
@@ -298,6 +348,8 @@ function Set-WizardWholeAssignment {
     }
 }
 
+# Small helper: wraps a target (e.g. "this group" or "all devices") in the
+# envelope shape a single assignment entry needs.
 function New-WizardAssignmentEntry {
     param([Parameter(Mandatory)][hashtable]$Target)
     return @{
@@ -374,12 +426,16 @@ function Get-WizardAssignmentSummary {
     return $summary
 }
 
+# Works out the desired assignment set for a script's metadata and pushes it
+# to Graph as a single replace-everything call.
 function Set-WizardAssignments {
     param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)]$Meta)
 
     # @(...) is load-bearing: a function returning an empty array hands back
     # $null through the pipeline, which the -Assignments parameter rejects.
     # Without it, #noassignments fails instead of clearing the assignments.
+    # The backtick ` at the end of a line is PowerShell's line-continuation
+    # character, letting one command be written across several lines.
     $assignments = @(Get-WizardDesiredAssignments `
         -Type $Meta.Type `
         -NoAssignments:$Meta.NoAssignments `
@@ -389,6 +445,8 @@ function Set-WizardAssignments {
     Set-WizardWholeAssignment -Id $Id -Assignments $assignments
 }
 
+# Creates a brand-new deviceManagementScript in Intune from local script
+# metadata, then assigns it.
 function New-WizardScript {
     param([Parameter(Mandatory)]$Meta)
 
@@ -396,6 +454,8 @@ function New-WizardScript {
     Write-WizardDebug "New script: file=$($Meta.FileName) runAs=$($Meta.RunAsAccount) 32bit=$($Meta.RunAs32Bit) sigCheck=$($Meta.EnforceSignatureCheck) noAssign=$($Meta.NoAssignments)"
 
     try {
+        # -ScriptContentInputFile lets the cmdlet read and base64-encode the
+        # script file itself, so this code never has to do that by hand.
         $script = New-MgBetaDeviceManagementScript `
             -DisplayName $Meta.DisplayName `
             -Description $Meta.Description `
@@ -427,6 +487,8 @@ function New-WizardScript {
     return $script
 }
 
+# Updates an existing deviceManagementScript's content/settings in place, after
+# backing it up first, then re-applies its assignments.
 function Update-WizardScript {
     param(
         [Parameter(Mandatory)]$Meta,
@@ -467,6 +529,7 @@ function Update-WizardScript {
     }
 }
 
+# Deletes a deviceManagementScript from Intune entirely.
 function Remove-WizardScript {
     # No caller in Deploy-IntuneScripts.ps1 itself - the wizard never deletes
     # anything on its own. Used by e2e-tests/Remove-E2ETestSet.ps1 to tear

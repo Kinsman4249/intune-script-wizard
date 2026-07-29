@@ -3,10 +3,14 @@
 # Comments are left in the uploaded script content untouched - they're valid
 # PowerShell comments and cause no harm at runtime on the endpoint.
 
+# Takes the raw text after "#group:" (or "#excludegroup:") and returns it
+# with any surrounding quotes removed, ready to use as a group name or GUID.
 function Get-WizardGroupRefValue {
     # Strips the optional surrounding double quotes from a #group: value.
     # Quotes are only needed for display names, but accepting them around a
     # GUID too means users don't have to remember which form takes them.
+    # param() declares this function's inputs. [Parameter(Mandatory)] means
+    # the caller must supply -Raw or PowerShell will prompt/error.
     param([Parameter(Mandatory)][string]$Raw)
 
     $value = $Raw.Trim()
@@ -16,6 +20,9 @@ function Get-WizardGroupRefValue {
     return $value.Trim()
 }
 
+# Reads one .ps1 file line by line and pulls out its #scriptname:, #type:,
+# #group:, description block, etc. Returns a single object describing the
+# script, or $null if the script isn't meant to be deployed (see below).
 function Get-ScriptMetadata {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -31,13 +38,22 @@ function Get-ScriptMetadata {
     try {
         # -ErrorAction Stop matters even under a 'Stop' preference: Get-Content
         # reports some read failures as non-terminating errors per file.
+        # Get-Content reads the file as an array of lines. Wrapping it in @(...)
+        # guarantees $lines is always an array, even if the file has 0 or 1 lines
+        # (without the @(), a single-line file would come back as a plain string).
         $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
     } catch {
+        # try/catch: if Get-Content fails (bad permissions, locked file, etc),
+        # the catch block runs instead of crashing, so we can throw a clearer message.
         throw "Could not read '$Path': $($_.Exception.Message). Fix the file's permissions, close whatever is holding it open, or move it out of the scanned folder."
     }
 
+    # .NET's Path class strips the folder and the ".ps1" extension, leaving
+    # just the file's base name (e.g. "C:\scripts\foo.ps1" -> "foo").
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Path)
 
+    # These are the defaults used if the matching #directive comment is never
+    # found while scanning the file below.
     $displayName = $baseName
     $description = ''
     # Folder placement wins by default. #type: is parsed into $typeFromComment
@@ -48,20 +64,33 @@ function Get-ScriptMetadata {
     $noAssignments = $false
     $enforceSignatureCheck = $false
     $runAs32Bit = $true   # default: do NOT run in 64-bit PowerShell host
+    # $inDesc is a flag: true while we're reading lines between #startdesc and
+    # #enddesc, so multi-line description text is collected instead of being
+    # matched against the single-line directives below.
     $inDesc = $false
+    # @() creates an empty array. These collect multiple values found across
+    # the file (a description can span many lines; #group: can repeat).
     $descLines = @()
     $groupRefs = @()
     $excludeGroupRefs = @()
 
+    # Walk the file one line at a time, checking each trimmed line against a
+    # series of patterns. Every branch below ends in "continue", which skips
+    # straight to the next line of the loop once a match is handled.
     foreach ($line in $lines) {
         $trimmed = $line.Trim()
 
         if ($inDesc) {
+            # -match tests $trimmed against a regular expression (regex) on the
+            # right. '^#\s*enddesc\s*$' means: start of line, a '#', optional
+            # whitespace, the word "enddesc", optional whitespace, end of line.
             if ($trimmed -match '^#\s*enddesc\s*$') {
                 $inDesc = $false
                 continue
             }
             # Strip a single leading '#' and one optional space, keep the rest verbatim.
+            # -replace applies a regex substitution: matches for '^#\s?' at the
+            # start of the string are replaced with nothing (deleted).
             $descLines += ($trimmed -replace '^#\s?', '')
             continue
         }
@@ -70,6 +99,9 @@ function Get-ScriptMetadata {
             $inDesc = $true
             continue
         }
+        # (?<name>...) is a "named capture group": the text matched inside the
+        # parentheses is saved and retrievable afterwards via $Matches['name'].
+        # -match automatically fills the built-in $Matches variable on success.
         if ($trimmed -match '^#\s*scriptname\s*:\s*"(?<name>[^"]+)"\s*$') {
             $displayName = $Matches['name']
             continue
@@ -108,6 +140,9 @@ function Get-ScriptMetadata {
     }
 
     if ($descLines.Count -gt 0) {
+        # -join "`n" glues the array of description lines back into one string,
+        # putting a newline character (`n is PowerShell's escape for newline,
+        # only recognized inside double quotes) between each line.
         $description = ($descLines -join "`n")
     }
 
@@ -142,11 +177,17 @@ function Get-ScriptMetadata {
         throw "'$Path': #noassignments cannot be combined with #group: or #excludegroup:. Remove one or the other."
     }
 
+    # Pipeline: $groupRefs is piped into Where-Object, which keeps only the
+    # entries that also appear in $excludeGroupRefs (-in checks membership).
+    # The result is any group listed in both places, which is a contradiction.
     $overlap = $groupRefs | Where-Object { $_ -in $excludeGroupRefs }
     if ($overlap) {
         throw "'$Path': group(s) listed as both #group: and #excludegroup: - $(($overlap | Select-Object -Unique) -join ', ')."
     }
 
+    # [pscustomobject]@{ ... } builds a lightweight custom object with named
+    # properties, similar to a struct/record in other languages. This is the
+    # single return value describing everything parsed out of the script.
     [pscustomobject]@{
         Path                  = $Path
         FileName              = [System.IO.Path]::GetFileName($Path)
@@ -166,6 +207,9 @@ function Get-ScriptMetadata {
     }
 }
 
+# Scans RootPath (and its user/ and device/ subfolders) for .ps1 files,
+# skips any that are the wizard's own files, and returns the parsed metadata
+# (from Get-ScriptMetadata) for every remaining script.
 function Find-WizardScripts {
     param(
         [Parameter(Mandatory)][string]$RootPath,
@@ -181,6 +225,10 @@ function Find-WizardScripts {
 
     # Case-insensitive set of normalised full paths for O(1) exclusion checks.
     # Catches the usual case: the wizard is run from the same folder it scans.
+    # A HashSet is like an array but optimized for fast "does this exist in
+    # here?" lookups instead of ordered storage; OrdinalIgnoreCase makes those
+    # lookups ignore upper/lower case, which matters on case-insensitive
+    # filesystems like Windows.
     $excluded = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase)
     # File names only. Catches the other case: someone copied the wizard next to
@@ -193,6 +241,9 @@ function Find-WizardScripts {
 
     foreach ($p in $ExcludePath) {
         if (-not $p) { continue }
+        # [void] discards the return value. HashSet.Add() returns $true/$false
+        # for whether the item was new, but here we don't care about that result
+        # and [void] stops it from being printed to the console.
         [void]$excluded.Add([System.IO.Path]::GetFullPath($p))
         [void]$excludedNames.Add([System.IO.Path]::GetFileName($p))
     }
@@ -237,7 +288,13 @@ function Find-WizardScripts {
             Write-WizardDebug "Skipping loose copy of a wizard file $fullPath"
             continue
         }
+        # -AllowTypeOverride:$AllowTypeOverride forwards this function's own
+        # switch parameter on to Get-ScriptMetadata. The colon form is needed
+        # because $AllowTypeOverride holds a boolean-like value being passed
+        # through, rather than just turning the switch on by its presence.
         $meta = Get-ScriptMetadata -Path $candidate.File.FullName -FolderType $candidate.FolderType -AllowTypeOverride:$AllowTypeOverride
+        # Get-ScriptMetadata returns $null for scripts that shouldn't be
+        # deployed (see its own comments), so only keep non-null results.
         if ($meta) { $results += $meta }
     }
 

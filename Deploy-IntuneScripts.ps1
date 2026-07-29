@@ -93,11 +93,20 @@ param(
     [string]$DebugLog = 'None'
 )
 
+# Stop the whole script the instant any command raises an error, instead of
+# limping on with bad data. Almost every well-behaved PowerShell script sets this.
 $ErrorActionPreference = 'Stop'
+# $PSScriptRoot is a built-in variable holding the folder this .ps1 file lives in,
+# no matter where the user ran it from. We save it under our own name ($here) so
+# it still reads correctly inside functions defined further down.
 $here = $PSScriptRoot
 
-# Loading the library is the one thing that happens before the wizard's own
-# error reporting exists, so it gets its own plain handler.
+# This script is split into several small files under lib/ (one topic each:
+# errors, logging, parsing, etc). PowerShell's dot-source operator ". <path>"
+# runs another script file as if its contents were pasted in right here, which
+# is how all the Get-Wizard*/Write-Wizard*/etc functions used below become
+# available. Loading the library is the one thing that happens before the
+# wizard's own error reporting exists, so it gets its own plain try/catch.
 try {
     foreach ($libFile in @('Errors.ps1', 'Logging.ps1', 'Storage.ps1', 'Prereqs.ps1',
                            'Parsing.ps1', 'Matching.ps1', 'GraphOps.ps1', 'Backup.ps1')) {
@@ -108,10 +117,17 @@ try {
         . $libPath
     }
 } catch {
+    # [Console]::Error.WriteLine writes straight to stderr, bypassing PowerShell's
+    # own error formatting, since none of our nicer logging helpers exist yet.
     [Console]::Error.WriteLine("intune-script-wizard: $($_.Exception.Message)")
     exit 1
 }
 
+# "Fuzzy match" means a local script's name/description looks a lot like (but
+# not exactly like) a script that already exists in Intune. This function
+# decides what to do about that: skip it, replace the existing one, or create
+# a second, side-by-side copy. If the caller already told us what to do via
+# -OnFuzzyMatch, we just use that; otherwise we ask interactively.
 function Resolve-FuzzyAction {
     param(
         [Parameter(Mandatory)]$Local,
@@ -139,6 +155,10 @@ function Resolve-FuzzyAction {
     # nothing and the caller fell through to creating a duplicate. Coercing to a
     # string makes end-of-input land on the documented default of Skip.
     $choice = [string](Read-Host "[S]kip / [R]eplace existing / create [side-by-side]?")
+    # "switch -Regex" tests $choice against each pattern in order and runs the
+    # first one that matches. '^r' means "starts with r" (Replace), '^si' means
+    # "starts with si" (SideBySide), and 'default' catches everything else -
+    # including "skip", an empty string, or a typo - so those all mean Skip.
     switch -Regex ($choice) {
         '^r'  { return 'Replace' }
         '^si' { return 'SideBySide' }
@@ -146,11 +166,13 @@ function Resolve-FuzzyAction {
     }
 }
 
+# After we create or update a script in Intune, we record that fact in $Registry
+# (an in-memory list standing in for "everything currently in the tenant"). This
+# keeps the in-memory view of the tenant accurate within a single run, so a
+# script created or updated early on is visible to the matching logic for
+# every later script. The list is passed in rather than reached for through
+# the scope chain, so the dependency is visible at the call site.
 function Register-DeployedScript {
-    # Keeps the in-memory view of the tenant accurate within a single run, so a
-    # script created or updated early on is visible to the matching logic for
-    # every later script. The list is passed in rather than reached for through
-    # the scope chain, so the dependency is visible at the call site.
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$Registry,
         [Parameter(Mandatory)][string]$Id,
@@ -158,12 +180,20 @@ function Register-DeployedScript {
         [Parameter(Mandatory)][string]$ContentHash
     )
 
+    # Where-Object filters the list down to items matching the condition; piping
+    # that into Select-Object -First 1 keeps just the first match (or $null if
+    # there were none). This is PowerShell's usual way of doing a "find" lookup.
     $existing = $Registry | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
     if ($existing) {
+        # Already in the list (from an earlier read of the tenant) - update its
+        # fields in place rather than adding a duplicate entry.
         $existing.DisplayName = $Meta.DisplayName
         $existing.Description = $Meta.Description
         $existing.ContentHash = $ContentHash
     } else {
+        # Brand new to this run - [pscustomobject]@{...} builds a simple record
+        # (like a dictionary/struct) with these named fields, and we add it to
+        # the list.
         $Registry.Add([pscustomobject]@{
             Id                   = $Id
             DisplayName          = $Meta.DisplayName
@@ -175,13 +205,13 @@ function Register-DeployedScript {
     Write-WizardDebug "In-run state updated for $Id ($($Meta.DisplayName))"
 }
 
+# Decides what one local script needs and does it, returning an outcome for
+# the run summary. Everything here used to live in the deploy loop with
+# 'continue nextScript' at each exit; as a function each of those becomes a
+# plain 'return', which removes the labelled-continue-inside-switch trap the
+# old loop had to carry a warning about, and makes the whole body wrappable
+# in a single try/catch by the caller.
 function Invoke-WizardScriptDeployment {
-    # Decides what one local script needs and does it, returning an outcome for
-    # the run summary. Everything here used to live in the deploy loop with
-    # 'continue nextScript' at each exit; as a function each of those becomes a
-    # plain 'return', which removes the labelled-continue-inside-switch trap the
-    # old loop had to carry a warning about, and makes the whole body wrappable
-    # in a single try/catch by the caller.
     param(
         [Parameter(Mandatory)]$Meta,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$Registry,
@@ -189,6 +219,11 @@ function Invoke-WizardScriptDeployment {
         [switch]$DryRun
     )
 
+    # A hash is a short fingerprint calculated from the file's contents: two
+    # files with the exact same text produce the exact same hash, and any
+    # change at all produces a completely different one. Comparing hashes lets
+    # us tell "identical content" apart from "same name, different content"
+    # without downloading and diffing the full text of every existing script.
     $localHash = Get-WizardFileHash -Path $Meta.Path
     Write-WizardDebug "Local hash $localHash for $($Meta.Path)"
     $contentMatch = $Registry | Where-Object { $_.ContentHash -eq $localHash } | Select-Object -First 1
@@ -199,6 +234,9 @@ function Invoke-WizardScriptDeployment {
     }
 
     if ($contentMatch) {
+        # Same content, different display name. Similarity 1.0 (100%) is passed
+        # even though this isn't going through the fuzzy-name scoring below,
+        # because "identical content" is as sure a match as it gets.
         Write-Host "  Identical content already exists in Intune as '$($contentMatch.DisplayName)' ($($contentMatch.Id))." -ForegroundColor Yellow
         $action = Resolve-FuzzyAction -Local $Meta -Existing $contentMatch -Similarity 1.0
         switch ($action) {
@@ -223,6 +261,8 @@ function Invoke-WizardScriptDeployment {
         }
     }
 
+    # No content match. Next check: is there already a script with this exact
+    # display name (different content)? If so it's an update, not a new script.
     $nameMatch = $Registry | Where-Object { $_.DisplayName -eq $Meta.DisplayName } | Select-Object -First 1
     if ($nameMatch) {
         if ($DryRun) {
@@ -234,6 +274,9 @@ function Invoke-WizardScriptDeployment {
         return 'Updated'
     }
 
+    # Neither exact match hit, so scan every existing script and score how
+    # similar its name/description are to this local one (0.0 = nothing alike,
+    # 1.0 = identical text), keeping track of whichever scores highest.
     $best = $null
     $bestScore = 0.0
     foreach ($ex in $Registry) {
@@ -246,6 +289,9 @@ function Invoke-WizardScriptDeployment {
         Write-WizardDebug "Best fuzzy candidate '$($best.DisplayName)' scored $([Math]::Round($bestScore, 3))"
     }
 
+    # Only treat it as a possible duplicate if the best score clears the
+    # configured threshold (defined in lib/Matching.ps1) - a weak resemblance
+    # isn't worth interrupting the run to ask about.
     if ($best -and $bestScore -ge $script:FuzzyMatchThreshold) {
         $action = Resolve-FuzzyAction -Local $Meta -Existing $best -Similarity $bestScore
         switch ($action) {
@@ -267,6 +313,8 @@ function Invoke-WizardScriptDeployment {
         }
     }
 
+    # Nothing matched at all (or it did, and the user chose SideBySide) - this
+    # is a genuinely new script.
     if ($DryRun) {
         Write-Host "  [DryRun] Would create new script '$($Meta.DisplayName)'."
         return 'Planned'
@@ -276,6 +324,8 @@ function Invoke-WizardScriptDeployment {
     return 'Created'
 }
 
+# Prints the final tally at the end of a run (how many scripts were created,
+# updated, skipped, etc) and the details of any failures.
 function Write-WizardRunSummary {
     param(
         [Parameter(Mandatory)][hashtable]$Outcomes,
@@ -309,14 +359,17 @@ function Write-WizardRunSummary {
     }
 }
 
+# The whole run, returning the process exit code. Written as a function so
+# every early exit is a 'return' the outer handler can see, rather than an
+# 'exit' that jumps out past the logging teardown.
 function Invoke-WizardRun {
-    # The whole run, returning the process exit code. Written as a function so
-    # every early exit is a 'return' the outer handler can see, rather than an
-    # 'exit' that jumps out past the logging teardown.
 
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw "-Path '$Path' does not exist or is not a folder."
     }
+    # Resolve-Path turns a relative or possibly-messy path (like ".") into the
+    # full, canonical filesystem path, so the rest of the script always works
+    # with an unambiguous location.
     $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
 
     Initialize-WizardLogging -Mode $DebugLog -LogRoot $resolvedPath
@@ -335,6 +388,9 @@ function Invoke-WizardRun {
         return $script:WizardExitOk
     }
 
+    # Make sure we're on a supported PowerShell version, that the Microsoft
+    # Graph PowerShell modules this script depends on are installed (offering
+    # to install them if not), and then load them into this session.
     Test-WizardPSVersion
     Install-WizardModules -AcceptInstall:$AcceptModuleInstall
     Import-WizardModules
@@ -353,21 +409,29 @@ function Invoke-WizardRun {
 
     Write-Host "Scanning $resolvedPath for scripts..."
 
-    # The wizard's own files are never deployable scripts.
+    # The wizard's own files are never deployable scripts. Build the exclude
+    # list from this script itself ($PSCommandPath) plus every .ps1 in lib/,
+    # in case the wizard is sitting inside the same -Path being scanned.
     $ownFiles = @($PSCommandPath) + @(
         Get-ChildItem -LiteralPath (Join-Path $here 'lib') -Filter '*.ps1' -File -ErrorAction SilentlyContinue |
             ForEach-Object { $_.FullName }
     )
 
+    # @(...) around a function call forces the result to always be treated as
+    # an array/list, even if Find-WizardScripts happens to return exactly one
+    # item (PowerShell would otherwise "unwrap" a single result), so
+    # .Count below always works correctly.
     $localScripts = @(Find-WizardScripts -RootPath $resolvedPath -ExcludePath $ownFiles -AllowTypeOverride:$AllowTypeOverride)
     if ($localScripts.Count -eq 0) {
         Write-Host "No scripts found under user/ or device/ (or loose scripts with #type:)."
         return $script:WizardExitOk
     }
 
-    # Two local scripts sharing a display name would each miss the other's freshly
-    # created Intune object and silently produce duplicates. Fail before touching
-    # the tenant rather than half-deploying.
+    # Group-Object bundles the scripts by DisplayName, so each bundle with more
+    # than one item ($_.Count -gt 1) means two or more local files want the same
+    # name. Two local scripts sharing a display name would each miss the other's
+    # freshly created Intune object and silently produce duplicates. Fail before
+    # touching the tenant rather than half-deploying.
     $dupeNames = $localScripts | Group-Object DisplayName | Where-Object { $_.Count -gt 1 }
     if ($dupeNames) {
         $detail = $dupeNames | ForEach-Object {
@@ -398,6 +462,8 @@ Rename the files, or use #scriptname:"Some Name" to disambiguate them.
     $existingScripts = [System.Collections.Generic.List[object]]::new()
     foreach ($s in (Get-WizardExistingScripts -CachePath $cachePath)) { $existingScripts.Add($s) }
 
+    # A hashtable (the @{ key = value; ... } syntax) is PowerShell's dictionary
+    # type: a lookup table of names to values, here counting each outcome type.
     $outcomes = @{ Created = 0; Updated = 0; UpToDate = 0; Skipped = 0; Planned = 0 }
     $failures = @()
     $aborted = $false
@@ -434,17 +500,29 @@ Rename the files, or use #scriptname:"Some Name" to disambiguate them.
     return $script:WizardExitOk
 }
 
-# Nothing below this point is allowed to leave the process without an exit code
-# or without closing out the log: an unattended caller has only those two things
-# to go on.
+# --- Script entry point ---
+# Everything above this line just defined functions; nothing has actually run
+# yet. This is where execution really starts. Nothing below this point is
+# allowed to leave the process without an exit code or without closing out the
+# log: an unattended caller has only those two things to go on.
+#
+# Default to the "something went badly wrong before we even got going" exit
+# code, so that if Invoke-WizardRun throws before assigning anything, we still
+# exit with a sensible failure code instead of an unset value.
 $exitCode = $script:WizardExitFatal
 try {
     $exitCode = Invoke-WizardRun
 } catch {
+    # Catches anything Invoke-WizardRun didn't handle itself - logs it as a
+    # fatal error and makes sure we still exit with the fatal code.
     Write-WizardFatal -ErrorRecord $_
     $exitCode = $script:WizardExitFatal
 } finally {
+    # 'finally' always runs, whether the try block succeeded or threw, so the
+    # log file is always closed out cleanly.
     Close-WizardLogging -ExitCode $exitCode
 }
 
+# 'exit' ends the PowerShell process and hands this number back to whatever
+# invoked it (a terminal, a scheduled task, a CI pipeline) as the exit code.
 exit $exitCode

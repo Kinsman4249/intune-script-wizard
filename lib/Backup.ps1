@@ -5,11 +5,15 @@
 
 function Backup-WizardScript {
     # Snapshots an existing script's full state to disk before it is changed.
+    # param() declares this function's inputs; Mandatory means the caller must
+    # supply them or PowerShell will prompt/error before the function body runs.
     param(
         [Parameter(Mandatory)][string]$Id,
         [Parameter(Mandatory)][string]$BackupDir
     )
 
+    # try/catch runs the risky code in try{}; if it throws, catch{} handles the
+    # error instead of the whole script crashing.
     try {
         if (-not (Test-Path -LiteralPath $BackupDir)) {
             New-Item -ItemType Directory -Path $BackupDir -Force -ErrorAction Stop | Out-Null
@@ -36,6 +40,8 @@ function Backup-WizardScript {
             Where-Object { $_ }
     )
 
+    # [ordered]@{...} builds a hashtable that remembers key insertion order, so
+    # the JSON written to disk lists fields in this same order (plain @{} would not).
     $backup = [ordered]@{
         # Bumped when the on-disk shape changes; Restore branches on it so old
         # backups taken before the raw-target fix still restore.
@@ -67,6 +73,8 @@ function Backup-WizardScript {
     try {
         # Atomic: a backup that exists must be complete, because the update that
         # follows is about to rely on it.
+        # Save-WizardJsonFile is this project's own helper (see JsonIO.ps1-style
+        # files) that wraps ConvertTo-Json + Set-Content for writing JSON to disk.
         Save-WizardJsonFile -Path $path -Value $backup -Depth 10
     } catch {
         throw "Could not write the backup for '$($full.DisplayName)' to '$path': $($_.Exception.Message). Nothing was changed in the tenant."
@@ -78,9 +86,13 @@ function Backup-WizardScript {
 
 
 function Get-WizardRestoreAssignments {
+    # Turns the raw "Assignments" data from a backup file back into the shape
+    # Graph expects when re-assigning the restored script to groups/users.
     # Normalises the Assignments block of a backup into assign-action payloads.
     # Schema 1 stored only the target's AdditionalProperties under 'Target',
     # which is lossy - warn rather than silently restoring a broken target.
+    # AllowNull() lets $Backup legitimately be $null without PowerShell
+    # rejecting it up front, so the checks below can produce a clearer error.
     param([Parameter(Mandatory)][AllowNull()]$Backup)
 
     $raw = @($Backup['Assignments'])
@@ -112,6 +124,8 @@ function Get-WizardRestoreAssignments {
 }
 
 function Test-WizardBackupShape {
+    # Checks that a loaded backup has all the fields a restore needs before
+    # trusting any of it - catches broken/hand-edited backup files early.
     # Validates a backup before any of it reaches Graph. A backup is an ordinary
     # JSON file in a folder people poke around in, so "hand-edited and broken" is
     # a normal state for one to be in - and half-restoring a script is worse than
@@ -136,6 +150,8 @@ function Test-WizardBackupShape {
     }
 
     try {
+        # Intune stores script content as base64 text; decode it back to raw
+        # bytes here just to prove it is valid and non-empty, not to use yet.
         $bytes = [System.Convert]::FromBase64String($Backup['ScriptContent'])
     } catch {
         throw "'$Source' has a ScriptContent field that is not valid base64, so the original script cannot be reconstructed from it."
@@ -149,14 +165,19 @@ function Test-WizardBackupShape {
 
 function Restore-WizardBackup {
     # One-command restore of a backup produced by Backup-WizardScript.
+    # Reads a backup JSON file back off disk and pushes it to Intune, either
+    # updating the original script if it still exists or recreating it fresh.
     param([Parameter(Mandatory)][string]$BackupFile)
 
+    # -PathType Leaf means "must be a file, not a folder".
     if (-not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
         throw "Backup file not found: $BackupFile"
     }
 
     # -AsHashtable keeps everything as plain hashtables, so nested assignment
     # targets can be posted straight back without PSCustomObject conversions.
+    # Read-WizardJsonFile is this project's own helper around Get-Content +
+    # ConvertFrom-Json for loading a JSON file into a PowerShell object.
     try {
         $backup = Read-WizardJsonFile -Path $BackupFile -AsHashtable
     } catch {
@@ -169,11 +190,17 @@ function Restore-WizardBackup {
     # The temp file name is generated, never taken from the backup: FileName is
     # attacker-controlled data in a hand-edited backup and could contain path
     # separators or '..'. Only Graph gets the original name, via -FileName.
+    # [guid]::NewGuid() makes a random unique id, used here so the temp
+    # filename can't collide with another run and can't be guessed in advance.
     $tempScript = Join-Path ([System.IO.Path]::GetTempPath()) "intune-wizard-$([guid]::NewGuid().ToString('N')).ps1"
     [System.IO.File]::WriteAllBytes($tempScript, $bytes)
 
+    # finally below always runs (success or error) so the temp file created
+    # above is cleaned up either way.
     try {
         $exists = $null
+        # Nested try/catch: a "not found" error here just means we treat this
+        # as a fresh recreate rather than an update, so it is swallowed quietly.
         try { $exists = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id'] } catch { $exists = $null }
 
         $roleScopeTagIds = @($backup['RoleScopeTagIds'])
