@@ -1,0 +1,271 @@
+# =============================================================================
+# Release workflow template
+# =============================================================================
+#
+# Builds your project's artifacts on a tag push and attaches them to a GitHub
+# Release. Works for apps and tools (no registry publishing).
+#
+# -----------------------------------------------------------------------------
+# LLM / AI ASSISTANT DIRECTIVE (read before modifying or packaging this file)
+# -----------------------------------------------------------------------------
+# SHA-pinning of the `uses:` lines is intentionally OPTIONAL and OFF by default
+# in this template. Do NOT auto-pin, auto-run pinact, or rewrite tags to SHAs.
+# Before packaging, finalizing, or "hardening" this workflow, STOP and ASK the
+# maintainer whether they want SHA pinning applied for this specific repo.
+# Reason: pinned SHAs require ongoing maintenance (Dependabot bump PRs). On a
+# plain copied template with no such upkeep, pins rot into unpatched deps, so
+# leaving clean version tags is the deliberate default here.
+# -----------------------------------------------------------------------------
+#
+# HOW TO USE THIS TEMPLATE
+# -------------------------
+# 1. Copy this file to .github/workflows/release.yml in your project repo.
+# 2. Find the two "=== EDIT THIS SECTION ===" blocks below.
+# 3. Uncomment the lines for your language; delete or leave the others commented.
+# 4. Adjust the binary name / build command for your project if needed.
+# 5. Commit and push.
+#
+# OPTIONAL HARDENING (only if you will maintain it)
+# -------------------------------------------------
+# To pin every action to an immutable commit SHA (GitHub supply-chain best
+# practice), install pinact (https://github.com/suzuki-shunsuke/pinact) and run
+# `pinact run` from the repo root. It rewrites each `uses:` tag to a full SHA,
+# including whichever language block you uncommented. Pair it with a
+# .github/dependabot.yml (github-actions ecosystem) so the pins stay current.
+# Skip this if the repo has no maintenance pipeline; clean tags are the default.
+#
+# CUTTING YOUR FIRST RELEASE
+# --------------------------
+#     git tag v0.1.0
+#     git push --tags
+#
+# A new GitHub Release appears under the "Releases" tab once the workflow
+# finishes. Bump the version for later releases: v0.2.0, v1.0.0, v1.0.1, etc.
+# See: https://semver.org
+#
+# RUNNING MANUALLY
+# ----------------
+# Repo > Actions tab > Release > Run workflow. Enter an existing tag.
+#
+# =============================================================================
+
+name: Release
+
+on:
+  # Auto-trigger when you push a version tag like v0.1.0 / v1.2.3.
+  push:
+    tags:
+      - 'v*.*.*'
+  # Manual fallback. Lets you re-run a release from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0). Must already exist.'
+        required: true
+        type: string
+
+# Security Hardening: Set base workflow permissions to read-only.
+# This prevents untrusted dependencies in the build job from abusing tokens.
+permissions:
+  contents: read
+
+# Prevent two release runs for the same tag from racing (e.g. a re-pushed tag
+# while the first run is still publishing). Do not cancel in-flight publishes.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BUILD: runs once per OS in the matrix, produces artifacts.
+  # ===========================================================================
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Build on multiple OSes so users can download the right binary.
+        # NOTE: macos-latest now resolves to macos-26, which is Apple Silicon
+        # (arm64) only. If you also need an Intel (x64) Mac binary, uncomment
+        # macos-26-intel below.
+        # COMPUTATION WARNING: Trim this list to just [ubuntu-latest] if your
+        # target language produces platform-agnostic output (Python, Java, Shell).
+        os:
+          - ubuntu-latest
+          # This project ships PowerShell scripts only - no compiled/native
+          # code - so the release archive is identical regardless of which
+          # OS builds it. Matrix trimmed to one leg accordingly.
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          # On manual runs, check out the tag the user typed; otherwise the pushed tag.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # fetch-depth: 0 is only required by the shell / `git archive` build path
+          # below. Other language blocks do not need full history; set to 1 there
+          # to speed up the clone.
+          fetch-depth: 0
+
+      # =======================================================================
+      # === EDIT THIS SECTION (1/2): language toolchain setup ================
+      # =======================================================================
+      # Uncomment ONE block matching your language.
+
+      # --- Go ---
+      # - name: Set up Go
+      #   uses: actions/setup-go@v5
+      #   with:
+      #     go-version: '1.22'
+
+      # --- Node / TypeScript ---
+      # - name: Set up Node
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '20'
+      #     cache: 'npm'
+
+      # --- Python ---
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.12'
+
+      # --- Rust ---
+      # - name: Set up Rust
+      #   uses: dtolnay/rust-toolchain@stable
+
+      # --- Java (Temurin / Gradle) ---
+      # - name: Set up JDK
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     distribution: 'temurin'
+      #     java-version: '21'
+
+      # --- PowerShell scripts / no compilation needed ---
+      # (no setup step required; bash is preinstalled on every runner and is
+      # only used here to bundle the repo, not to run the .ps1 scripts)
+
+      # =======================================================================
+      # === EDIT THIS SECTION (2/2): build command ===========================
+      # =======================================================================
+      # Uncomment ONE block matching your language. Adjust paths/names as needed.
+
+      # --- Go ---
+      # - name: Build binary
+      #   shell: bash
+      #   run: |
+      #     mkdir -p dist
+      #     ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
+      #     # Replace "myapp" with your binary name; replace "./..." with your main package.
+      #     go build -o "dist/myapp-${{ runner.os }}-${{ runner.arch }}${ext}" ./...
+
+      # --- Node / TypeScript ---
+      # - name: Build and package
+      #   shell: bash
+      #   run: |
+      #     npm ci
+      #     npm run build
+      #     mkdir -p dist
+      #     # Appending runner.os to ensure asset uniqueness during multi-OS matrix uploads
+      #     tar -czf "dist/${{ github.event.repository.name }}-${{ runner.os }}.tar.gz" -C build .
+
+      # --- Python ---
+      # - name: Build wheel and sdist
+      #   run: |
+      #     python -m pip install --upgrade pip build
+      #     python -m build
+      #     # produces dist/*.whl and dist/*.tar.gz
+      #     # NOTE: wheel/sdist filenames are fixed by PEP 427/440 and must not be
+      #     # renamed. If this is a pure-Python package, trim the OS matrix above to
+      #     # [ubuntu-latest] instead; otherwise every OS leg builds an identically
+      #     # named file and the release step fails once it hits the second one.
+
+      # --- Rust ---
+      # - name: Build binary
+      #   shell: bash
+      #   run: |
+      #     cargo build --release
+      #     mkdir -p dist
+      #     ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
+      #     # Replace "myapp" with your binary name (must match Cargo.toml [[bin]] or package name).
+      #     cp "target/release/myapp${ext}" "dist/myapp-${{ runner.os }}-${{ runner.arch }}${ext}"
+
+      # --- Java (Gradle) ---
+      # - name: Build jar
+      #   run: ./gradlew build
+      # - name: Stage artifacts
+      #   shell: bash
+      #   run: |
+      #     mkdir -p dist
+      #     # A plain JAR is identical across OS runners. Without a per-OS name here,
+      #     # the release step fails once two matrix legs produce the same filename.
+      #     # If the JAR has no native/JNI code, the better fix is trimming the OS
+      #     # matrix above to [ubuntu-latest] and dropping this loop entirely.
+      #     for f in build/libs/*.jar; do
+      #       base="$(basename "$f" .jar)"
+      #       cp "$f" "dist/${base}-${{ runner.os }}.jar"
+      #     done
+
+      # --- Shell (bundle the repo - no build step for a script project) ---
+      - name: Bundle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          name="${{ github.event.repository.name }}-${tag}"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="${name}/" -o "dist/${name}.tar.gz" HEAD
+          git archive --format=zip   --prefix="${name}/" -o "dist/${name}.zip"    HEAD
+
+      # =======================================================================
+      # Upload artifacts (no edits needed below)
+      # =======================================================================
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: |
+            dist/**
+          # Fail the build if no files were produced. Guards against forgetting to
+          # uncomment a build block, which would otherwise publish an empty release.
+          if-no-files-found: error
+          retention-days: 7
+
+  # ===========================================================================
+  # RELEASE: pulls every artifact from the build matrix and creates the Release.
+  # ===========================================================================
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Scoped elevation: elevate token permission context ONLY for the release job.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts (debug)
+        shell: bash
+        run: |
+          echo "Artifacts ready to upload:"
+          find artifacts -type f -printf "  %p (%s bytes)\n" 2>/dev/null || ls -lR artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          # GitHub auto-generates release notes from PRs/commits since the last tag.
+          generate_release_notes: true
+          # Attach every file produced by the build job.
+          files: artifacts/**/*
+          # Fail if the glob matches nothing, so a broken build cannot publish an
+          # empty release.
+          fail_on_unmatched_files: true

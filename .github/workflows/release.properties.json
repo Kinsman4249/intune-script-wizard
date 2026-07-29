@@ -1,0 +1,12 @@
+{
+  "name": "Release (artifacts on tag push)",
+  "description": "Build artifacts on tag push and attach them to a GitHub Release. Edit the language sections inside the file (Go, Node/TS, Python, Rust, Java, Shell).",
+  "iconName": "octicon tag",
+  "categories": [
+    "Continuous integration",
+    "Continuous deployment"
+  ],
+  "filePatterns": [
+    ".*"
+  ]
+}

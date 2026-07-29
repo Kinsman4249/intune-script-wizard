@@ -1,0 +1,7 @@
+# Runtime state - contains snapshots of deployed script content, keep local only.
+backups/
+.intune-script-cache.json
+
+# Session notes (see CLAUDE.md workflow)
+handoff.md
+todo.md
