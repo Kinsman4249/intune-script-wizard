@@ -22,7 +22,10 @@ function Get-ScriptMetadata {
         # Type inferred from the folder the script was found in (user/device),
         # or $null if the script was found loose and must carry a #type comment.
         [ValidateSet('user', 'device', $null)]
-        [string]$FolderType
+        [string]$FolderType,
+        # Same effect as a per-script #typeoverride:yes, applied to every script
+        # in the run. Set from Deploy-IntuneScripts.ps1's -AllowTypeOverride.
+        [switch]$AllowTypeOverride
     )
 
     $lines = Get-Content -LiteralPath $Path
@@ -30,7 +33,11 @@ function Get-ScriptMetadata {
 
     $displayName = $baseName
     $description = ''
-    $type = $FolderType
+    # Folder placement wins by default. #type: is parsed into $typeFromComment
+    # rather than straight into $type, so a conflict can be resolved (folder
+    # wins, unless #typeoverride:yes is present) after the whole file is read.
+    $typeFromComment = $null
+    $typeOverride = $false
     $noAssignments = $false
     $enforceSignatureCheck = $false
     $runAs32Bit = $true   # default: do NOT run in 64-bit PowerShell host
@@ -61,7 +68,11 @@ function Get-ScriptMetadata {
             continue
         }
         if ($trimmed -match '^#\s*type\s*:\s*(?<type>user|device)\s*$') {
-            $type = $Matches['type'].ToLowerInvariant()
+            $typeFromComment = $Matches['type'].ToLowerInvariant()
+            continue
+        }
+        if ($trimmed -match '^#\s*typeoverride\s*:\s*yes\s*$') {
+            $typeOverride = $true
             continue
         }
         if ($trimmed -match '^#\s*noassig(?:n)?ments?\s*$') {
@@ -91,6 +102,25 @@ function Get-ScriptMetadata {
 
     if ($descLines.Count -gt 0) {
         $description = ($descLines -join "`n")
+    }
+
+    # Resolve #type: against the folder it was found in. A script sitting under
+    # user/ or device/ is trusted to be there on purpose, so the folder wins on
+    # a conflict - #typeoverride:yes lets an author say the comment is correct
+    # and the folder is not (e.g. a device script staged under user/ on purpose).
+    if ($FolderType -and $typeFromComment -and $typeFromComment -ne $FolderType) {
+        if ($typeOverride -or $AllowTypeOverride) {
+            $type = $typeFromComment
+            $via = if ($typeOverride) { '#typeoverride:yes' } else { '-AllowTypeOverride' }
+            Write-WizardDebug "'$Path': $via honoured, using #type:$typeFromComment over folder '$FolderType'."
+        } else {
+            $type = $FolderType
+            Write-Warning "'$Path': #type:$typeFromComment conflicts with its '$FolderType' folder. Folder wins; add #typeoverride:yes to the script or pass -AllowTypeOverride to use the comment instead."
+        }
+    } elseif ($FolderType) {
+        $type = $FolderType
+    } else {
+        $type = $typeFromComment
     }
 
     if (-not $type) {
@@ -137,7 +167,9 @@ function Find-WizardScripts {
         # Deploy-IntuneScripts.ps1 is itself a loose .ps1 under RootPath, which
         # otherwise warns on every run and would be uploadable to Intune the
         # moment anyone added a #type: comment to it.
-        [string[]]$ExcludePath = @()
+        [string[]]$ExcludePath = @(),
+        # Passed straight through to Get-ScriptMetadata for every candidate.
+        [switch]$AllowTypeOverride
     )
 
     # Case-insensitive set of normalised full paths for O(1) exclusion checks.
@@ -188,7 +220,7 @@ function Find-WizardScripts {
             Write-WizardDebug "Skipping loose copy of a wizard file $fullPath"
             continue
         }
-        $meta = Get-ScriptMetadata -Path $candidate.File.FullName -FolderType $candidate.FolderType
+        $meta = Get-ScriptMetadata -Path $candidate.File.FullName -FolderType $candidate.FolderType -AllowTypeOverride:$AllowTypeOverride
         if ($meta) { $results += $meta }
     }
 

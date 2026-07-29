@@ -335,6 +335,44 @@ Check 'all-devices replaced by group target' (
     $t.Count -eq 1 -and $t[0]['@odata.type'] -eq '#microsoft.graph.groupAssignmentTarget' -and $t[0]['groupId'] -eq $helpdeskId
 ) ($t | ConvertTo-Json -Compress)
 
+# --------------------------------------------------------------- Test 15
+# A conflicting #type: comment loses to the folder the script sits in.
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Script-A.ps1'; Body = "#type:user`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() }
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check 'Folder wins over conflicting #type: comment' (
+    $created.Count -eq 1 -and $created[0]['data']['runAsAccount'] -eq 'system'
+) "got $($created | ConvertTo-Json -Compress -Depth 5)"
+Check 'Folder-vs-comment conflict warns' ($r.Output -match 'conflicts with its .device. folder') $r.Output
+
+# --------------------------------------------------------------- Test 16
+# #typeoverride:yes lets the comment win over the folder instead.
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Script-A.ps1'; Body = "#type:user`n#typeoverride:yes`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() }
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check '#typeoverride:yes honours the #type: comment' (
+    $created.Count -eq 1 -and $created[0]['data']['runAsAccount'] -eq 'user'
+) "got $($created | ConvertTo-Json -Compress -Depth 5)"
+
+# --------------------------------------------------------------- Test 17
+# Loose (unsorted) scripts and folder-sorted scripts are deployed together.
+$ws = New-Workspace -Scripts @(
+    @{ Rel = 'device/Script-A.ps1'; Body = $bodyA },
+    @{ Rel = 'Loose-Script.ps1';    Body = "#type:user`n$bodyB" }
+)
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() }
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check 'Loose script deploys alongside folder-sorted script' ($created.Count -eq 2) "got $($created.Count)"
+
+# --------------------------------------------------------------- Test 18
+# -AllowTypeOverride does the same as #typeoverride:yes, for every script.
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Script-A.ps1'; Body = "#type:user`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() } -WizardArgs @('-AllowTypeOverride')
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check '-AllowTypeOverride honours the #type: comment' (
+    $created.Count -eq 1 -and $created[0]['data']['runAsAccount'] -eq 'user'
+) "got $($created | ConvertTo-Json -Compress -Depth 5)"
+
 Write-Host ""
 Write-Host "$pass passed, $fail failed" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 

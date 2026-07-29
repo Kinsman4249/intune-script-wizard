@@ -12,7 +12,13 @@
       #scriptname:"Override Name"   - display name override (else filename)
       #startdesc / #enddesc         - lines between these become the description
       #type:user|device             - required only if the script isn't under
-                                       a user/ or device/ folder
+                                       a user/ or device/ folder. If the script
+                                       IS under one of those folders, the folder
+                                       wins over a conflicting #type: comment
+                                       unless #typeoverride:yes is also present,
+                                       or the run used -AllowTypeOverride.
+      #typeoverride:yes             - let a conflicting #type: comment win over
+                                       the folder the script is sitting in
       #noassignments / #noassigments - do not assign this script to anyone
       #group:"Name" or #group:<guid> - assign to this group instead of all
                                        users/devices; repeatable
@@ -42,6 +48,10 @@
 .PARAMETER DryRun
     Print what would happen without making any Graph calls that change data.
 
+.PARAMETER AllowTypeOverride
+    Let a conflicting #type: comment win over its user/device folder for every
+    script in this run, instead of adding #typeoverride:yes to each one.
+
 .PARAMETER Restore
     Path to a JSON backup file (see backups/) to restore in one command. All
     other parameters except -DebugLog are ignored in this mode.
@@ -61,6 +71,7 @@ param(
     [string]$OnFuzzyMatch,
     [switch]$AcceptModuleInstall,
     [switch]$DryRun,
+    [switch]$AllowTypeOverride,
     [string]$Restore,
     [switch]$ListBackups,
     [ValidateSet('None', 'Console', 'File', 'Both')]
@@ -82,7 +93,7 @@ if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
 $Path = (Resolve-Path -LiteralPath $Path).Path
 
 Initialize-WizardLogging -Mode $DebugLog -LogRoot $Path
-Write-WizardDebug "Path=$Path DryRun=$DryRun OnFuzzyMatch=$OnFuzzyMatch"
+Write-WizardDebug "Path=$Path DryRun=$DryRun OnFuzzyMatch=$OnFuzzyMatch AllowTypeOverride=$AllowTypeOverride"
 
 $backupDir = Join-Path $Path 'backups'
 $cachePath = Join-Path $Path '.intune-script-cache.json'
@@ -136,7 +147,7 @@ $ownFiles = @($PSCommandPath) + @(
         ForEach-Object { $_.FullName }
 )
 
-$localScripts = @(Find-WizardScripts -RootPath $Path -ExcludePath $ownFiles)
+$localScripts = @(Find-WizardScripts -RootPath $Path -ExcludePath $ownFiles -AllowTypeOverride:$AllowTypeOverride)
 if ($localScripts.Count -eq 0) {
     Write-Host "No scripts found under user/ or device/ (or loose scripts with #type:)."
     exit 0
