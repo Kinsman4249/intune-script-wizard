@@ -30,7 +30,7 @@ Open an issue using the **Feature request** template. Describe the use case befo
 - Follow the style of the surrounding code. Match formatting, naming, and structure of existing files.
 - Comments should explain *why*, not *what*. The diff already shows what.
 - **No new dependencies** without strong justification - the appeal of small projects is the small, predictable surface area.
-- **No telemetry, ever.** This project must not phone home.
+- **Telemetry is opt-in crash reporting only, asked fresh each time.** See the "Telemetry" section in the README and [PRIVACY.md](PRIVACY.md). Don't add any telemetry that sends data without an explicit per-run prompt, and don't add telemetry to unattended/scheduled runs.
 
 ## Commit messages
 

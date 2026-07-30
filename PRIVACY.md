@@ -74,8 +74,10 @@ first place.
 
 A shared Cloudflare Worker at `telemetry.ethanantonio.com`, used by several
 of the maintainer's tools. The request carries a fixed app-identifying
-token, which is not a secret - it's a filter to keep bot traffic out, not an
-access control on your data. See the
+token, checked by a rule in front of the Worker - requests without a valid
+token are blocked before they reach it. It's not a secret in the sense of
+protecting your data (it ships readable in this project's source), but it
+does keep untargeted bot traffic out. See the
 [endpoint's privacy policy](https://telemetry.ethanantonio.com/privacy) for
 where reports are stored, how long they're kept, and who can see them.
 

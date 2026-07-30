@@ -1,5 +1,9 @@
 # Change history
 
+### v1.7.1 (2026-07-29)
+
+Clarified telemetry documentation in `CONTRIBUTING.md`, `PRIVACY.md`, and `lib/Telemetry.ps1`. Updated contributor guidelines to reflect opt-in crash reporting policy. Improved comments in `lib/Telemetry.ps1` to better explain the app token's role in bot-traffic filtering (not data protection) and how the telemetry endpoint validates requests. No functional changes.
+
 ### v1.7.0 (2026-07-29)
 
 Bumped backup schema to v3: backup JSON files now include `ReplacedByDisplayName` and `ReplacedByContentHash` fields that record the display name and content hash of whatever script is about to replace the backed-up one. These fields are consumed during restore-recreate (when the original script ID no longer exists); `Remove-WizardOrphanReplacement` uses the fingerprint to spot a since-orphaned duplicate and prompts interactively before deletion (never auto-deletes unattended). Added `-RestoreAll` flag to `Deploy-IntuneScripts.ps1`: treats `-Restore` as a folder and restores every `*.json` backup directly under it in sequence; one failure does not stop processing the rest. All successful restores (single or batch) now move their backup file into a `backup-restored/` subfolder, so a restored backup cannot be confused for one still pending or restored a second time by accident. Updated and added test cases (schema v3, ReplacedBy fields, -RestoreAll happy path and usage errors, backup-restored/ move); all 90 tests passing.

@@ -21,8 +21,10 @@
 # that file in sync with the payload shape below if you change it.
 
 $script:TelemetryEndpoint = 'https://telemetry.ethanantonio.com/event'
-# Not a secret - it ships readable in this file and the server treats it as
-# a bot-noise filter, not access control. Kept as one named constant so
+# Ships readable in this file, so it's not a secret in the "keeps out a
+# determined attacker" sense - but a dynamic rule in front of the Worker does
+# check it, and requests without a valid value get blocked before they ever
+# reach the Worker (403, no JSON body). Kept as one named constant so
 # rotating it later is a one-line change.
 $script:TelemetryAppToken = 'd4a3b89de27ea43910f46d61cd8759e532ce814c16d97661'
 $script:TelemetryAppName = 'intune-script-wizard'
