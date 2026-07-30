@@ -1,5 +1,9 @@
 # Change history
 
+### v1.5.0 (2026-07-29)
+
+Added opt-in crash-report telemetry in `lib/Telemetry.ps1`. The first time you run the wizard interactively, it prompts a one-time y/n question: send an anonymous crash report if a fatal error occurs. The answer is saved to `%APPDATA%\IntuneScriptWizard\telemetry-consent.json` on Windows or `~/.intune-script-wizard/telemetry-consent.json` on other platforms, so you are not asked again. Unattended runs (scheduled tasks, CI) are never prompted and never send anything. If you opt in, a fatal error sends the tool version, PowerShell/OS version, and a scrubbed error summary/detail to a Cloudflare Worker operated by the maintainer. Local usernames, hostnames, IPs, file paths, tenant/object GUIDs, bearer tokens, JWTs, and anything shaped like a password or API key are stripped out before the report leaves your machine - see `PRIVACY.md` for the exact scrubbing rules. Network failures, timeouts, and endpoint unavailability do not affect the deployment outcome; telemetry is never allowed to fail a run. Consent preference saves are best-effort too, so if your profile is read-only, you remain opted-in for that run but are asked again next time. This feature does not change the wizard's functionality or exit codes; deployments behave identically whether telemetry is opted-in or declined.
+
 ### v1.4.1 (2026-07-28)
 
 Added comprehensive code comments and documentation throughout `Deploy-IntuneScripts.ps1` and all library modules (`lib/*.ps1`). Comments explain algorithm choices (e.g., Levenshtein distance, atomic file writes), PowerShell idioms, error handling invariants, and the overall control flow. This improves code maintainability and onboarding for future contributors without changing any functional behavior.

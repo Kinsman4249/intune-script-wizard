@@ -109,7 +109,7 @@ $here = $PSScriptRoot
 # wizard's own error reporting exists, so it gets its own plain try/catch.
 try {
     foreach ($libFile in @('Errors.ps1', 'Logging.ps1', 'Storage.ps1', 'Prereqs.ps1',
-                           'Parsing.ps1', 'Matching.ps1', 'GraphOps.ps1', 'Backup.ps1')) {
+                           'Parsing.ps1', 'Matching.ps1', 'GraphOps.ps1', 'Backup.ps1', 'Telemetry.ps1')) {
         $libPath = Join-Path $here 'lib' $libFile
         if (-not (Test-Path -LiteralPath $libPath -PathType Leaf)) {
             throw "Required library file is missing: $libPath. Copy or clone the wizard folder in full, including lib/."
@@ -374,6 +374,13 @@ function Invoke-WizardRun {
 
     Initialize-WizardLogging -Mode $DebugLog -LogRoot $resolvedPath
     Write-WizardDebug "Path=$resolvedPath DryRun=$DryRun OnFuzzyMatch=$OnFuzzyMatch AllowTypeOverride=$AllowTypeOverride StopOnError=$StopOnError"
+
+    # Ask about crash-report telemetry once per machine, before anything that
+    # could fail. $script: so Write-WizardFatal (in Errors.ps1) can read it too.
+    $script:TelemetryConsent = Get-WizardTelemetryConsent
+    if ($null -eq $script:TelemetryConsent) {
+        $script:TelemetryConsent = Request-WizardTelemetryConsent
+    }
 
     $backupDir = Join-Path $resolvedPath 'backups'
     $cachePath = Join-Path $resolvedPath '.intune-script-cache.json'
