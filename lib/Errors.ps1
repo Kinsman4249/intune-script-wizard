@@ -152,11 +152,8 @@ function Write-WizardFatal {
     # stream and, under $ErrorActionPreference = 'Stop', throw from the handler.
     [Console]::Error.WriteLine("intune-script-wizard: $summary")
 
-    # Only fires if the user opted in at the telemetry prompt (lib/Telemetry.ps1).
-    # $script:TelemetryConsent is unset before that prompt has run at all (e.g. a
-    # failure during library loading, before Invoke-WizardRun starts), so this
-    # must not assume the variable exists.
-    if ($script:TelemetryConsent) {
-        Send-WizardCrashReport -ErrorRecord $ErrorRecord
-    }
+    # Always saves the crash locally and decides for itself (per-crash prompt,
+    # with backoff on repeats) whether to also ask about sending it - see
+    # lib/Telemetry.ps1. There is no separate opt-in flag to check here.
+    Send-WizardCrashReport -ErrorRecord $ErrorRecord
 }

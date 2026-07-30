@@ -375,13 +375,6 @@ function Invoke-WizardRun {
     Initialize-WizardLogging -Mode $DebugLog -LogRoot $resolvedPath
     Write-WizardDebug "Path=$resolvedPath DryRun=$DryRun OnFuzzyMatch=$OnFuzzyMatch AllowTypeOverride=$AllowTypeOverride StopOnError=$StopOnError"
 
-    # Ask about crash-report telemetry once per machine, before anything that
-    # could fail. $script: so Write-WizardFatal (in Errors.ps1) can read it too.
-    $script:TelemetryConsent = Get-WizardTelemetryConsent
-    if ($null -eq $script:TelemetryConsent) {
-        $script:TelemetryConsent = Request-WizardTelemetryConsent
-    }
-
     $backupDir = Join-Path $resolvedPath 'backups'
     $cachePath = Join-Path $resolvedPath '.intune-script-cache.json'
 
