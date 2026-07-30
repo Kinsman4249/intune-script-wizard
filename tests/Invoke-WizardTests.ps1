@@ -176,17 +176,25 @@ Check 'Backup preserved groupId'        ($bt['groupId'] -eq 'aaaaaaaa-bbbb-cccc-
 Check 'Backup preserved filter id'      ($bt['deviceAndAppManagementAssignmentFilterId'] -eq 'filter-123') "got $($bt['deviceAndAppManagementAssignmentFilterId'])"
 Check 'Backup preserved scope tags'     ((@($backup['RoleScopeTagIds']) -join ',') -eq '0,7') "got $(@($backup['RoleScopeTagIds']) -join ',')"
 Check 'Backup dropped assignment id'    (-not $backup['Assignments'][0].ContainsKey('id')) 'id leaked into backup'
-Check 'Backup schema version is 2'      ($backup['SchemaVersion'] -eq 2) "got $($backup['SchemaVersion'])"
+Check 'Backup schema version is 3'      ($backup['SchemaVersion'] -eq 3) "got $($backup['SchemaVersion'])"
+Check 'Backup recorded replacement name' (-not [string]::IsNullOrWhiteSpace($backup['ReplacedByDisplayName'])) 'ReplacedByDisplayName was blank'
+Check 'Backup recorded replacement hash' (-not [string]::IsNullOrWhiteSpace($backup['ReplacedByContentHash'])) 'ReplacedByContentHash was blank'
+
+$backupFilePath = $backupFile.FullName
 
 # Restore that backup and confirm scope tags and the group target come back.
 $env:WIZTEST_STATE = Join-Path $ws '_state.json'
 $env:WIZTEST_CALLS = Join-Path $ws '_calls.jsonl'
 $env:PSModulePath  = $stubs
-& pwsh -NoProfile -File (Join-Path $repo 'Deploy-IntuneScripts.ps1') -Path $ws -Restore $backupFile.FullName *>&1 | Out-Null
+& pwsh -NoProfile -File (Join-Path $repo 'Deploy-IntuneScripts.ps1') -Path $ws -Restore $backupFilePath *>&1 | Out-Null
 $after = Get-Content -LiteralPath $env:WIZTEST_STATE -Raw | ConvertFrom-Json -AsHashtable
 $restored = $after['scripts'] | Where-Object { $_['id'] -eq 'existing-2' }
 Check 'Restore reinstated scope tags'   ((@($restored['roleScopeTagIds']) -join ',') -eq '0,7') "got $(@($restored['roleScopeTagIds']) -join ',')"
 Check 'Restore reinstated groupId'      (@($restored['assignments'])[0]['target']['groupId'] -eq 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee') "got $(@($restored['assignments'])[0]['target'] | ConvertTo-Json -Compress)"
+
+$restoredCopy = Join-Path (Join-Path $ws 'backups' 'backup-restored') (Split-Path -Leaf $backupFilePath)
+Check 'Restored backup moved to backup-restored/' (Test-Path -LiteralPath $restoredCopy) "expected $restoredCopy"
+Check 'Restored backup no longer in backups/'     (-not (Test-Path -LiteralPath $backupFilePath)) "still at $backupFilePath"
 
 # ---------------------------------------------------------------- Test 6
 # #noassignments must clear assignments, not leave them in place.
@@ -487,6 +495,64 @@ foreach ($case in $badBackups) {
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() } -WizardArgs @('-Restore', 'anything.json', '-DryRun')
 Check '-DryRun with -Restore is refused' ($r.Output -match 'cannot be combined with -Restore') $r.Output
 Check '-DryRun with -Restore exits 1'    ($r.ExitCode -eq 1) "got $($r.ExitCode)"
+
+# --------------------------------------------------------------- Test 26
+# -RestoreAll restores every backup directly under a folder in one command,
+# and each one gets moved into backup-restored/ afterwards.
+$bodyA2 = "# device script A v2`nWrite-Host 'a2'`n"
+$bodyB2 = "# user script B v2`nWrite-Host 'b2'`n"
+$ws = New-Workspace -Scripts @(
+    @{ Rel = 'device/Script-A.ps1'; Body = $bodyA2 }
+    @{ Rel = 'user/Script-B.ps1'; Body = $bodyB2 }
+)
+$state = @{ groups = @(); scripts = @(
+    @{
+        id = 'existing-a'; displayName = 'Script-A'; description = ''
+        fileName = 'Script-A.ps1'
+        scriptContent = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bodyA))
+        runAsAccount = 'system'; enforceSignatureCheck = $false; runAs32Bit = $true
+        roleScopeTagIds = @('0'); lastModifiedDateTime = (Get-Date).ToString('o'); assignments = @()
+    }
+    @{
+        id = 'existing-b'; displayName = 'Script-B'; description = ''
+        fileName = 'Script-B.ps1'
+        scriptContent = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bodyB))
+        runAsAccount = 'user'; enforceSignatureCheck = $false; runAs32Bit = $false
+        roleScopeTagIds = @('0'); lastModifiedDateTime = (Get-Date).ToString('o'); assignments = @()
+    }
+) }
+$r = Invoke-Wizard -Workspace $ws -State $state
+Check '-RestoreAll setup: both scripts updated' ($r.ExitCode -eq 0) $r.Output
+$backupsDir = Join-Path $ws 'backups'
+$backupFiles = @(Get-ChildItem -LiteralPath $backupsDir -Filter '*.json')
+Check '-RestoreAll setup: two backups written' ($backupFiles.Count -eq 2) "got $($backupFiles.Count)"
+
+$env:WIZTEST_STATE = Join-Path $ws '_state.json'
+$env:WIZTEST_CALLS = Join-Path $ws '_calls.jsonl'
+$env:PSModulePath  = $stubs
+$out = & pwsh -NoProfile -File (Join-Path $repo 'Deploy-IntuneScripts.ps1') -Path $ws -Restore $backupsDir -RestoreAll 2>&1 | Out-String
+$code = $LASTEXITCODE
+Check '-RestoreAll exits 0'   ($code -eq 0) "got $code`n$out"
+Check '-RestoreAll restored both' ($out -match 'Restoring 2 backup') $out
+
+$after = Get-Content -LiteralPath $env:WIZTEST_STATE -Raw | ConvertFrom-Json -AsHashtable
+$restoredA = $after['scripts'] | Where-Object { $_['id'] -eq 'existing-a' }
+$restoredB = $after['scripts'] | Where-Object { $_['id'] -eq 'existing-b' }
+Check '-RestoreAll reinstated script A content' (
+    [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($restoredA['scriptContent'])) -eq $bodyA
+) "got $($restoredA['scriptContent'])"
+Check '-RestoreAll reinstated script B content' (
+    [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($restoredB['scriptContent'])) -eq $bodyB
+) "got $($restoredB['scriptContent'])"
+
+$movedFiles = @(Get-ChildItem -LiteralPath (Join-Path $backupsDir 'backup-restored') -Filter '*.json' -ErrorAction SilentlyContinue)
+Check '-RestoreAll moved both backups to backup-restored/' ($movedFiles.Count -eq 2) "got $($movedFiles.Count)"
+Check '-RestoreAll left backups/ empty of json'  ((@(Get-ChildItem -LiteralPath $backupsDir -Filter '*.json')).Count -eq 0) 'files still directly under backups/'
+
+# -RestoreAll without -Restore is a usage error, not a silent no-op.
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @() } -WizardArgs @('-RestoreAll')
+Check '-RestoreAll without -Restore is refused' ($r.Output -match "needs -Restore") $r.Output
+Check '-RestoreAll without -Restore exits 1'    ($r.ExitCode -eq 1) "got $($r.ExitCode)"
 
 Write-Host ""
 Write-Host "$pass passed, $fail failed" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

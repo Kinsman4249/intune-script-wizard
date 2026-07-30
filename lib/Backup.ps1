@@ -9,7 +9,14 @@ function Backup-WizardScript {
     # supply them or PowerShell will prompt/error before the function body runs.
     param(
         [Parameter(Mandatory)][string]$Id,
-        [Parameter(Mandatory)][string]$BackupDir
+        [Parameter(Mandatory)][string]$BackupDir,
+        # What's about to be pushed in place of the script being backed up, i.e.
+        # what "restore" would be undoing. Optional: Restore-WizardBackup only
+        # uses this to spot an orphaned duplicate in the rare case where, by
+        # restore time, $Id no longer exists and a brand-new script has to be
+        # created for it instead of updating in place.
+        [string]$ReplacementDisplayName,
+        [string]$ReplacementContentHash
     )
 
     # try/catch runs the risky code in try{}; if it throws, catch{} handles the
@@ -45,7 +52,7 @@ function Backup-WizardScript {
     $backup = [ordered]@{
         # Bumped when the on-disk shape changes; Restore branches on it so old
         # backups taken before the raw-target fix still restore.
-        SchemaVersion          = 2
+        SchemaVersion          = 3
         Id                     = $full.Id
         DisplayName            = $full.DisplayName
         Description            = $full.Description
@@ -57,6 +64,14 @@ function Backup-WizardScript {
         RoleScopeTagIds        = @($full.RoleScopeTagIds)
         Assignments            = $assignments
         BackedUpAt             = (Get-Date).ToString('o')
+        # Schema 3+: fingerprint of whatever is about to be pushed into this
+        # script's place. Restore only needs this in the rare case where, by
+        # restore time, this Id is gone and it has to recreate under a new one
+        # - that leaves the script the backup's Id used to hold (now bearing
+        # this fingerprint) as an orphan with nothing pointing at it. Empty
+        # string rather than omitted, so old and new backups have the same shape.
+        ReplacedByDisplayName  = [string]$ReplacementDisplayName
+        ReplacedByContentHash  = [string]$ReplacementContentHash
     }
 
     # An empty or all-punctuation display name would collapse to '' and produce a
@@ -163,6 +178,76 @@ function Test-WizardBackupShape {
     return $bytes
 }
 
+function Remove-WizardOrphanReplacement {
+    # Only relevant to the recreate branch of Restore-WizardBackup: the
+    # original script's Id was gone by restore time, so a fresh Id was just
+    # created above for it. If whatever had been pushed into that Id's place
+    # (recorded at backup time as ReplacedByDisplayName/ReplacedByContentHash)
+    # still exists elsewhere in the tenant under its own Id, it is now an
+    # orphan - nothing local points at it anymore, since the original has just
+    # been recreated instead. Deletion always waits for a human: matching by
+    # name + content hash is a good guess, not proof, and a wrong guess deletes
+    # someone's live script.
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Backup,
+        [Parameter(Mandatory)][string]$RecreatedId
+    )
+
+    $name = [string]$Backup['ReplacedByDisplayName']
+    $hash = [string]$Backup['ReplacedByContentHash']
+    if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($hash)) {
+        return  # backup predates this check, or the script was never replaced before it vanished
+    }
+
+    try {
+        $candidates = @(Get-MgBetaDeviceManagementScript -All -Property id, displayName |
+            Where-Object { $_.Id -ne $RecreatedId -and $_.DisplayName -eq $name })
+    } catch {
+        Write-Warning "Could not check the tenant for an orphaned duplicate of '$name': $(Get-WizardErrorSummary -ErrorRecord $_). Check the Intune portal by hand if you expect one."
+        return
+    }
+    if ($candidates.Count -eq 0) { return }
+
+    # Name alone is too weak a match to delete on; confirm content too before
+    # this is even considered a candidate.
+    $matches = @()
+    foreach ($candidate in $candidates) {
+        try {
+            $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $candidate.Id -Property scriptContent
+            if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) { continue }
+            $candidateHash = Get-WizardBytesHash -Bytes ([System.Convert]::FromBase64String($full.ScriptContent))
+            if ($candidateHash -eq $hash) { $matches += $candidate }
+        } catch {
+            Write-WizardDebug "Could not hash candidate $($candidate.Id) while checking for an orphaned duplicate: $($_.Exception.Message)"
+        }
+    }
+    if ($matches.Count -eq 0) { return }
+
+    if ($matches.Count -gt 1) {
+        $ids = ($matches | ForEach-Object { $_.Id }) -join ', '
+        Write-Warning "Found $($matches.Count) scripts named '$name' matching what used to occupy this backup's slot; too ambiguous to guess which (if any) is the orphan. Check the Intune portal: $ids"
+        return
+    }
+
+    $orphan = $matches[0]
+    Write-Warning "'$name' ($($orphan.Id)) matches what this backup's script had been replaced with, and nothing local points at it anymore now that '$($Backup['DisplayName'])' has been recreated as $RecreatedId."
+    if (Test-WizardInteractive) {
+        $choice = [string](Read-Host "Delete the orphaned duplicate '$name' ($($orphan.Id))? [y/N]")
+        if ($choice -match '^y') {
+            try {
+                Remove-WizardScript -Id $orphan.Id
+                Write-Host "  Deleted orphaned duplicate $($orphan.Id)." -ForegroundColor DarkGray
+            } catch {
+                Write-Warning "Could not delete '$name' ($($orphan.Id)): $(Get-WizardErrorSummary -ErrorRecord $_). Remove it by hand if you don't want it kept."
+            }
+        } else {
+            Write-Host "  Left in place. Delete it by hand in the Intune portal if you don't want it kept."
+        }
+    } else {
+        Write-Warning "Not deleting automatically in a non-interactive session. Remove '$name' ($($orphan.Id)) by hand in the Intune portal if you don't want it kept."
+    }
+}
+
 function Restore-WizardBackup {
     # One-command restore of a backup produced by Backup-WizardScript.
     # Reads a backup JSON file back off disk and pushes it to Intune, either
@@ -242,6 +327,12 @@ function Restore-WizardBackup {
                 throw "Recreating '$($backup['DisplayName'])' returned no script id, so its assignments could not be restored. Check the Intune portal before retrying."
             }
             $targetId = $created.Id
+
+            # Only reachable because the original Id was gone, so whatever this
+            # backup's Id last held (recorded at backup time) may still be
+            # sitting in the tenant under its own Id, orphaned now that we just
+            # recreated the original instead of updating it in place.
+            Remove-WizardOrphanReplacement -Backup $backup -RecreatedId $targetId
         }
 
         # One full replacement: whatever the backup held becomes the whole set.
@@ -254,8 +345,39 @@ function Restore-WizardBackup {
         }
 
         Write-Host "Restore complete: $targetId" -ForegroundColor Green
+        Move-WizardRestoredBackup -BackupFile $BackupFile
         return $targetId
     } finally {
         Remove-Item -LiteralPath $tempScript -ErrorAction SilentlyContinue
+    }
+}
+
+function Move-WizardRestoredBackup {
+    # Once a backup has been restored it is done - leaving it sitting next to
+    # backups nobody has used yet makes it easy to lose track of which is
+    # which. Moves it into a 'backup-restored' folder alongside itself rather
+    # than deleting it, since the file is still the historical record of what
+    # the script looked like at that point. Purely tidying up: a failure here
+    # must not turn an already-successful restore into an error.
+    param([Parameter(Mandatory)][string]$BackupFile)
+
+    try {
+        $sourceDir = Split-Path -Parent $BackupFile
+        $restoredDir = Join-Path $sourceDir 'backup-restored'
+        if (-not (Test-Path -LiteralPath $restoredDir)) {
+            New-Item -ItemType Directory -Path $restoredDir -Force -ErrorAction Stop | Out-Null
+        }
+
+        $destination = Join-Path $restoredDir (Split-Path -Leaf $BackupFile)
+        if (Test-Path -LiteralPath $destination) {
+            # Same filename restored twice (backups are timestamped, but a
+            # hand-copied file could still collide): don't clobber the earlier one.
+            $destination = Join-Path $restoredDir "$([System.IO.Path]::GetFileNameWithoutExtension($BackupFile))_$((Get-Date).ToString('yyyyMMdd-HHmmss')).json"
+        }
+
+        Move-Item -LiteralPath $BackupFile -Destination $destination -Force -ErrorAction Stop
+        Write-Host "  Moved restored backup -> $destination" -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "Restore succeeded, but could not move '$BackupFile' into backup-restored/: $($_.Exception.Message). It's still in its original location."
     }
 }

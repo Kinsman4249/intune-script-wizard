@@ -498,7 +498,8 @@ function Update-WizardScript {
 
     # Deliberately not wrapped: if the backup cannot be taken, the update must
     # not happen either. That is the whole point of taking one.
-    $backupPath = Backup-WizardScript -Id $ExistingId -BackupDir $BackupDir
+    $backupPath = Backup-WizardScript -Id $ExistingId -BackupDir $BackupDir `
+        -ReplacementDisplayName $Meta.DisplayName -ReplacementContentHash (Get-WizardFileHash -Path $Meta.Path)
 
     Write-Host "Updating '$($Meta.DisplayName)' ($($Meta.Type))..."
     Write-WizardDebug "Update $ExistingId from $($Meta.Path)"

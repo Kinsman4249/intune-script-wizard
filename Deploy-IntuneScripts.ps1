@@ -67,7 +67,16 @@
 
 .PARAMETER Restore
     Path to a JSON backup file (see backups/) to restore in one command. All
-    other parameters except -DebugLog are ignored in this mode.
+    other parameters except -DebugLog are ignored in this mode. Combine with
+    -RestoreAll to instead point this at a folder and restore every backup in
+    it (each restored script is worked out independently, so one failing does
+    not stop the rest - see the summary at the end for what did and didn't
+    make it).
+
+.PARAMETER RestoreAll
+    Treats -Restore as a folder instead of a single file, and restores every
+    *.json backup directly inside it (not recursive - restored ones already
+    moved to backup-restored/ are skipped automatically).
 
 .PARAMETER ListBackups
     List available backup files under -Path/backups and exit.
@@ -88,6 +97,7 @@ param(
     [switch]$AllowTypeOverride,
     [switch]$StopOnError,
     [string]$Restore,
+    [switch]$RestoreAll,
     [switch]$ListBackups,
     [ValidateSet('None', 'Console', 'File', 'Both')]
     [string]$DebugLog = 'None'
@@ -395,6 +405,10 @@ function Invoke-WizardRun {
     Install-WizardModules -AcceptInstall:$AcceptModuleInstall
     Import-WizardModules
 
+    if ($RestoreAll -and -not $Restore) {
+        throw "-RestoreAll needs -Restore to point at the folder of backups to restore."
+    }
+
     if ($Restore) {
         # -DryRun cannot be honoured here - a restore is a single write with
         # nothing to preview - and silently ignoring it would mutate the tenant
@@ -402,8 +416,53 @@ function Invoke-WizardRun {
         if ($DryRun) {
             throw "-DryRun cannot be combined with -Restore: a restore has nothing to preview, and running it anyway would change the tenant. Drop one of the two."
         }
+
+        if (-not $RestoreAll) {
+            Connect-WizardGraph
+            Restore-WizardBackup -BackupFile $Restore | Out-Null
+            return $script:WizardExitOk
+        }
+
+        if (-not (Test-Path -LiteralPath $Restore -PathType Container)) {
+            throw "-RestoreAll needs -Restore to be a folder, but '$Restore' is not one."
+        }
+        # Not -Recurse: backup-restored/ sits directly under here and holds
+        # already-restored backups, which must not be restored a second time.
+        $files = @(Get-ChildItem -LiteralPath $Restore -Filter '*.json' -File)
+        if ($files.Count -eq 0) {
+            Write-Host "No backup files found directly under $Restore"
+            return $script:WizardExitOk
+        }
+
         Connect-WizardGraph
-        Restore-WizardBackup -BackupFile $Restore | Out-Null
+        Write-Host "Restoring $($files.Count) backup(s) from $Restore..."
+        $restoreFailures = @()
+        foreach ($file in $files) {
+            Write-Host ""
+            Write-Host "== $($file.Name) ==" -ForegroundColor Cyan
+            try {
+                Restore-WizardBackup -BackupFile $file.FullName | Out-Null
+            } catch {
+                # One backup's failure says nothing about the next one's, so the
+                # run keeps going and reports everything at the end - same as
+                # the normal deploy loop below.
+                $reason = Write-WizardFailure -Context "Restoring '$($file.Name)' failed." -ErrorRecord $_
+                $restoreFailures += [pscustomobject]@{ Name = $file.Name; Reason = $reason }
+            }
+        }
+
+        Write-Host ""
+        $restoredCount = $files.Count - $restoreFailures.Count
+        if ($restoreFailures.Count -gt 0) {
+            Write-Host "$restoredCount restored, $($restoreFailures.Count) failed" -ForegroundColor Yellow
+            Write-Host "Failed:" -ForegroundColor Red
+            foreach ($failure in $restoreFailures) {
+                Write-Host "  $($failure.Name)" -ForegroundColor Red
+                Write-Host "    $($failure.Reason)" -ForegroundColor Red
+            }
+            return $script:WizardExitPartial
+        }
+        Write-Host "$restoredCount restored, all succeeded." -ForegroundColor Green
         return $script:WizardExitOk
     }
 
