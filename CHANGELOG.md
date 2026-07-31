@@ -1,5 +1,9 @@
 # Change history
 
+### v1.7.2 (2026-07-31)
+
+Fixed `New-E2ETestSet.ps1` failing to parse `e2e-metadata.json` when a hand-edited value (e.g. a `CONTOSO\GroupName` displayName) contained a literal backslash, which is invalid JSON unless escaped. The script now repairs the raw file text before parsing, doubling any backslash that isn't already part of a valid JSON escape sequence, so these values no longer need to be escaped by hand. If the file is still not valid JSON after the repair pass, the resulting error now names the file and the parser's message instead of surfacing a bare `ConvertFrom-Json` exception.
+
 ### v1.7.1 (2026-07-29)
 
 Clarified telemetry documentation in `CONTRIBUTING.md`, `PRIVACY.md`, and `lib/Telemetry.ps1`. Updated contributor guidelines to reflect opt-in crash reporting policy. Improved comments in `lib/Telemetry.ps1` to better explain the app token's role in bot-traffic filtering (not data protection) and how the telemetry endpoint validates requests. No functional changes.
