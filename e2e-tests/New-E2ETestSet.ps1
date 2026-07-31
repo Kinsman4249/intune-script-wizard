@@ -62,7 +62,48 @@ if (-not (Test-Path -LiteralPath $MetadataPath)) {
     exit 0
 }
 
-$metadata = Get-Content -LiteralPath $MetadataPath -Raw | ConvertFrom-Json -AsHashtable
+function Repair-JsonBackslashes {
+    <#
+        Hand-edited group names/paths often contain a literal backslash
+        (e.g. CONTOSO\GroupName) that isn't valid inside a JSON string
+        unless doubled. Rather than making people remember to escape it,
+        walk the raw text and double any backslash that isn't already
+        part of a recognised JSON escape (\" \\ \/ \b \f \n \r \t \u).
+    #>
+    param([Parameter(Mandatory)][string]$Json)
+
+    $validEscapes = '"\/bfnrtu'
+    $sb = [System.Text.StringBuilder]::new()
+    $inString = $false
+    $i = 0
+    $len = $Json.Length
+    while ($i -lt $len) {
+        $c = $Json[$i]
+        if ($inString -and $c -eq '\') {
+            $next = if ($i + 1 -lt $len) { $Json[$i + 1] } else { $null }
+            if ($next -and $validEscapes.Contains($next)) {
+                [void]$sb.Append($c).Append($next)
+                $i += 2
+            } else {
+                [void]$sb.Append('\\')
+                $i += 1
+            }
+            continue
+        }
+        if ($c -eq '"') { $inString = -not $inString }
+        [void]$sb.Append($c)
+        $i++
+    }
+    return $sb.ToString()
+}
+
+try {
+    $rawMetadata = Get-Content -LiteralPath $MetadataPath -Raw
+    $metadata = Repair-JsonBackslashes -Json $rawMetadata | ConvertFrom-Json -AsHashtable
+}
+catch {
+    throw "'$MetadataPath' is not valid JSON: $($_.Exception.Message)"
+}
 
 if (-not $metadata['answers']['confirmDevTenant']) {
     throw "'$MetadataPath': answers.confirmDevTenant is false. Set it to true in the metadata file " +
