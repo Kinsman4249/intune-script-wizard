@@ -8,7 +8,7 @@
     "include": {
       "displayName": "",
       "guid": "",
-      "notes": "Used by the '#group: by name' and '#group: by guid' tests. Fill in displayName to generate the by-name variant, guid to generate the by-guid variant; fill in both to get both. Leave both blank and both variants are skipped (noted in CHECKLIST.md)."
+      "notes": "Fill in displayName to generate device/20-group-by-name.ps1, guid to generate device/21-group-by-guid.ps1; fill in both to get both - this is the only role where the two forms produce separate tests. Everything else that needs an include group uses displayName only (device/22-group-multiple.ps1, 24-group-and-excludegroup.ps1, 25-kitchen-sink.ps1), so a guid on its own generates test 21 and nothing more. Leave both blank and every include test is skipped (noted in CHECKLIST.md)."
     },
     "includeSecondary": {
       "displayName": "",
@@ -18,7 +18,7 @@
     "exclude": {
       "displayName": "",
       "guid": "",
-      "notes": "Used by the #excludegroup: tests, alone (everyone except this group) and combined with 'include'."
+      "notes": "Used by the #excludegroup: tests: device/23-excludegroup-only.ps1 (everyone except this group), plus device/24-group-and-excludegroup.ps1 and device/25-kitchen-sink.ps1, which also need include.displayName. Only ONE form is ever generated - displayName wins and the guid is ignored if both are filled in, so fill in guid ALONE to exercise the bare-guid form. Leave both blank and all three tests are skipped (noted in CHECKLIST.md)."
     }
   }
 }
