@@ -239,6 +239,10 @@ $incGuid = Get-GroupField 'include' 'guid'
 $incSecName = Get-GroupField 'includeSecondary' 'displayName'
 $excName = Get-GroupField 'exclude' 'displayName'
 $excGuid = Get-GroupField 'exclude' 'guid'
+# Unlike every other role, these two must be one group written both ways - see
+# the expect-failure clash test at the bottom, the only thing that reads them.
+$clashName = Get-GroupField 'sameGroupBothForms' 'displayName'
+$clashGuid = Get-GroupField 'sameGroupBothForms' 'guid'
 
 if (Test-HasValue $incName) {
     Add-E2ETest -Root 'main' -RelPath 'device/20-group-by-name.ps1' `
@@ -293,22 +297,44 @@ if (Test-HasValue $excGuid) {
     $skipped.Add("device/23b-excludegroup-by-guid.ps1 - groups.exclude.guid is blank in $MetadataPath")
 }
 
+# Include-plus-exclude, once per exclusion reference form for the same reason
+# test 23b exists: which form the exclusion is written in changes how it is
+# resolved, so a filled-in guid must not be shadowed by a filled-in name here
+# either. The two exclude fields need not be the same group - if they are two
+# different groups, these are simply two combined tests over two exclusions.
+if ((Test-HasValue $incName) -and (Test-HasValue $excName)) {
+    Add-E2ETest -Root 'main' -RelPath 'device/24-group-and-excludegroup.ps1' `
+        -Title '#group: + #excludegroup: by display name, combined' `
+        -Description "Carries #group:`"$incName`" and #excludegroup:`"$excName`"." `
+        -Expect "Assigned to group '$incName' with '$excName' excluded from it." `
+        -Directives @("#group:`"$incName`"", "#excludegroup:`"$excName`"")
+} else {
+    $skipped.Add("device/24-group-and-excludegroup.ps1 - needs both groups.include.displayName and groups.exclude.displayName")
+}
+
+if ((Test-HasValue $incName) -and (Test-HasValue $excGuid)) {
+    Add-E2ETest -Root 'main' -RelPath 'device/24b-group-and-excludegroup-by-guid.ps1' `
+        -Title '#group: by name + #excludegroup: by guid, combined' `
+        -Description "Carries #group:`"$incName`" and #excludegroup:$excGuid, so one assignment mixes a resolved name with a bare guid." `
+        -Expect "Assigned to group '$incName' with group guid $excGuid excluded from it." `
+        -Directives @("#group:`"$incName`"", "#excludegroup:$excGuid")
+} else {
+    $skipped.Add("device/24b-group-and-excludegroup-by-guid.ps1 - needs groups.include.displayName and groups.exclude.guid")
+}
+
+# The kitchen sink is about directives stacking up, not about reference forms
+# (23/23b and 24/24b already cover those), so it takes whichever exclude
+# reference is available and does not double up.
 if ((Test-HasValue $incName) -and ((Test-HasValue $excName) -or (Test-HasValue $excGuid))) {
     $excRef = if (Test-HasValue $excName) { "`"$excName`"" } else { $excGuid }
     $excLabel = if (Test-HasValue $excName) { $excName } else { $excGuid }
-    Add-E2ETest -Root 'main' -RelPath 'device/24-group-and-excludegroup.ps1' `
-        -Title '#group: + #excludegroup: combined' `
-        -Description "Carries #group:`"$incName`" and #excludegroup:$excRef." `
-        -Expect "Assigned to group '$incName' with '$excLabel' excluded from it." `
-        -Directives @("#group:`"$incName`"", "#excludegroup:$excRef")
-
     Add-E2ETest -Root 'main' -RelPath 'device/25-kitchen-sink.ps1' `
         -Title 'kitchen sink: description + group + excludegroup + scriptcheck + host64' `
         -Description "Combines a multi-line description, #group:`"$incName`", #excludegroup:$excRef, #scriptcheck:yes and #host:64 in one script." `
         -Expect "Assigned to '$incName' minus '$excLabel'; enforceSignatureCheck=true; runAs32Bit=false; description matches this text." `
         -Directives @("#group:`"$incName`"", "#excludegroup:$excRef", '#scriptcheck:yes', '#host:64')
 } else {
-    $skipped.Add("device/24-group-and-excludegroup.ps1 and device/25-kitchen-sink.ps1 - need groups.include and groups.exclude filled in")
+    $skipped.Add("device/25-kitchen-sink.ps1 - needs groups.include.displayName plus either groups.exclude.displayName or groups.exclude.guid")
 }
 
 # ==========================================================================
@@ -348,18 +374,19 @@ Add-E2ETest -Root 'expect-failure' -RelPath 'device/group-ref-overlap.ps1' `
     -Expect "Run throws '... group(s) listed as both #group: and #excludegroup: ...' before creating anything." `
     -Directives @('#group:"E2E-Overlap-Test-Group"', '#excludegroup:"E2E-Overlap-Test-Group"')
 
-# Needs a real group under both of its names, so unlike the rest of this root it
-# is metadata-dependent. The overlap test above is caught while parsing, because
-# both lines carry the same string; a display name on one line and that same
-# group's guid on the other only collide once Graph has resolved them.
-if ((Test-HasValue $excName) -and (Test-HasValue $excGuid)) {
+# The overlap test above is caught while parsing, because both lines carry the
+# same string; a display name on one line and that same group's guid on the other
+# only collide once Graph has resolved them. That needs one group written both
+# ways, which is the whole point of the sameGroupBothForms role - the include and
+# exclude roles are free to be four unrelated groups, so neither can supply it.
+if ((Test-HasValue $clashName) -and (Test-HasValue $clashGuid)) {
     Add-E2ETest -Root 'expect-failure' -RelPath 'device/group-ref-name-guid-clash.ps1' `
         -Title 'same group as #group: name and #excludegroup: guid' `
-        -Description "Includes group `"$excName`" by display name and excludes the same group by its guid ($excGuid). Different strings, one group." `
+        -Description "Includes group `"$clashName`" by display name and excludes the same group by its guid ($clashGuid). Different strings, one group." `
         -Expect "Run throws '... resolves to both an include and an exclude target ...' during group resolution, before creating anything." `
-        -Directives @("#group:`"$excName`"", "#excludegroup:$excGuid")
+        -Directives @("#group:`"$clashName`"", "#excludegroup:$clashGuid")
 } else {
-    $skipped.Add("device/group-ref-name-guid-clash.ps1 - needs BOTH groups.exclude.displayName and groups.exclude.guid, naming the same group")
+    $skipped.Add("device/group-ref-name-guid-clash.ps1 - needs groups.sameGroupBothForms.displayName and .guid, which must be the one group written both ways")
 }
 
 Add-E2ETest -Root 'expect-failure' -RelPath 'device/noassignments-plus-group.ps1' `

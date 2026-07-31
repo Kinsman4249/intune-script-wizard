@@ -91,13 +91,17 @@ stops. Edit that file:
   sorts it to the bottom of an alphabetical list - so any script left behind
   by a skipped or failed cleanup is obvious at a glance. Bump it to start a
   fresh, non-colliding batch (clean up the old prefix's batch first).
-- `groups.*` - display name and/or GUID for up to three test groups
-  (`include`, `includeSecondary`, `exclude`). Tests that need a group you
-  haven't filled in are skipped and listed in `CHECKLIST.md` instead of
-  being generated with bad data. For `include` and `exclude`, the two forms
-  are separate tests, not alternatives: a group referenced by GUID skips the
-  directory lookup entirely, so filling in both fields (same group each time)
-  is what covers both routes in and out.
+- `groups.*` - display name and/or GUID for up to four test groups
+  (`include`, `includeSecondary`, `exclude`, `sameGroupBothForms`). Tests
+  that need a group you haven't filled in are skipped and listed in
+  `CHECKLIST.md` instead of being generated with bad data. For `include` and
+  `exclude`, the display name and the GUID are separate tests rather than
+  two ways of saying the same thing - a group referenced by GUID skips the
+  directory lookup entirely - so filling in both fields runs both sets,
+  whether the two fields name one group or two unrelated ones.
+  `sameGroupBothForms` is the exception: its two fields must be a single
+  group written both ways, because the one test that reads them checks that
+  a name and a GUID landing on the same group is caught after resolution.
 
 Re-run the generator once the metadata file is filled in. It writes three
 folders under `e2e-tests/generated/` (each its own `-Path` root) plus a

@@ -18,7 +18,12 @@
     "exclude": {
       "displayName": "",
       "guid": "",
-      "notes": "Both forms MUST name the same group - several tests rely on that. displayName generates device/23-excludegroup-only.ps1, guid generates device/23b-excludegroup-by-guid.ps1, and filling in both also generates expect-failure/device/group-ref-name-guid-clash.ps1, which checks that including by name and excluding by guid is caught as one group on both sides. device/24-group-and-excludegroup.ps1 and 25-kitchen-sink.ps1 additionally need include.displayName, and use the display name here when it is filled in, the guid otherwise. Leave both blank and every exclude test is skipped (noted in CHECKLIST.md)."
+      "notes": "The two forms are independent tests, not alternatives, and they do NOT have to be the same group - fill in both and both run, whether they name one group or two. displayName generates device/23-excludegroup-only.ps1 and (with include.displayName) device/24-group-and-excludegroup.ps1; guid generates device/23b-excludegroup-by-guid.ps1 and (with include.displayName) device/24b-group-and-excludegroup-by-guid.ps1, which are the only tests covering an exclusion that skips the directory lookup. device/25-kitchen-sink.ps1 is about stacking directives rather than reference forms, so it takes the display name if there is one and the guid otherwise, and is generated once either way. Leave both blank and every exclude test is skipped (noted in CHECKLIST.md)."
+    },
+    "sameGroupBothForms": {
+      "displayName": "",
+      "guid": "",
+      "notes": "ONE group, written both ways: the displayName and the guid here must point at the same group, which is what makes this role different from every other one. Any group will do, including one already used above. It feeds a single test, expect-failure/device/group-ref-name-guid-clash.ps1, which includes the group by name and excludes it by guid: two different strings that only turn out to be the same group once Graph has resolved them, so the wizard's parse-time overlap check cannot catch it and the post-resolution check has to. Leave either field blank and that test is skipped (noted in CHECKLIST.md)."
     }
   }
 }
