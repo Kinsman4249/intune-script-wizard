@@ -3,14 +3,76 @@
 Offline regression coverage lives in [tests/](../tests) and runs against
 stub Graph modules - no tenant needed. This folder is different: it
 generates real `.ps1` files meant to be deployed by `Deploy-IntuneScripts.ps1`
-against an actual **dev** tenant, so you can eyeball things the offline
-tests can't check - real assignment targets, real group resolution, real
-Intune display names.
+against an actual **dev** tenant, covering what stubs cannot - real assignment
+targets, real group resolution, real Intune display names, and content that has
+genuinely round-tripped through Graph.
+
+Two of the scripts here check themselves and exit non-zero on failure -
+`Test-E2EDeployedSet.ps1` and `Test-E2EBackupRestore.ps1` - so most of what used
+to be a manual comparison is now automated. `generated/CHECKLIST.md` is left
+holding only the judgement calls a tenant cannot be asked about.
 
 `New-E2ETestSet.ps1` only writes files. It never calls Graph and never
 deploys anything itself.
 
-## Usage
+## When to run what
+
+Nothing here replaces [tests/](../tests). That suite is offline, takes seconds,
+and needs no tenant - run it on every change, always. This folder costs a real
+tenant and real minutes, so reach for it when the thing you changed is something
+stubs cannot honestly stand in for.
+
+| If you changed... | Run |
+| --- | --- |
+| Anything at all | The offline suite: `pwsh tests/Invoke-WizardTests.ps1` |
+| Script content, encoding, or upload (`New-`/`Update-MgBetaDeviceManagementScript`, `-ScriptContentInputFile`, hashing) | `Test-E2EDeployedSet.ps1` - only a real tenant round-trip proves the bytes survived |
+| Backup or restore (`lib/Backup.ps1`, the backup schema, `-Restore`/`-RestoreAll`) | `Test-E2EBackupRestore.ps1` |
+| Assignments, group resolution, `#group:`/`#excludegroup:`/`#noassignments` | Deploy `generated/main` + `Test-E2EDeployedSet.ps1` (real group ids, real targets) |
+| Meta-comment parsing, `#type:`/`#typeoverride:`, folder precedence | The full generate/deploy/verify cycle below |
+| Graph scopes, sign-in, consent | The full cycle - scope failures only surface against a real tenant |
+| Nothing tenant-facing (docs, logging, telemetry, error text) | Offline suite only |
+
+**Before every release**, run the full cycle once. The two self-checking scripts
+exit non-zero on failure, so they can also be wired into a pipeline pointed at a
+dev tenant.
+
+## The full cycle
+
+```
+# 0. Offline first - never spend a tenant run on something this would have caught
+pwsh tests/Invoke-WizardTests.ps1
+
+# 1. Generate (first run creates e2e-metadata.json and stops - fill it in)
+pwsh e2e-tests/New-E2ETestSet.ps1
+
+# 2. Deploy each root
+pwsh Deploy-IntuneScripts.ps1 -Path e2e-tests/generated/main
+pwsh Deploy-IntuneScripts.ps1 -Path e2e-tests/generated/allow-override -AllowTypeOverride
+pwsh Deploy-IntuneScripts.ps1 -Path e2e-tests/generated/expect-failure -DryRun   # must abort
+
+# 3. Verify what landed, per deployed root
+pwsh e2e-tests/Test-E2EDeployedSet.ps1 -Path e2e-tests/generated/main
+pwsh e2e-tests/Test-E2EDeployedSet.ps1 -Path e2e-tests/generated/allow-override -AllowTypeOverride
+
+# 4. Verify backups can actually be restored (independent of the generated set)
+pwsh e2e-tests/Test-E2EBackupRestore.ps1
+
+# 5. Work through generated/CHECKLIST.md for what only a human can judge
+
+# 6. Clean up
+pwsh e2e-tests/Remove-E2ETestSet.ps1 -Confirm
+```
+
+Step 3 has nothing to check for `expect-failure` - those runs deploy nothing by
+design, and "the wizard threw before creating anything" is the result.
+
+Step 4 stands alone: it builds and tears down its own throwaway script, so you
+can run it by itself in about a minute without generating or deploying the set.
+That makes it the one to reach for while iterating on backup/restore code. It
+does still read `e2e-metadata.json` for the `confirmDevTenant` gate and the run
+prefix, so on a fresh clone run step 1 once first to create that file.
+
+## Generating the set (steps 1-2)
 
 ```
 pwsh e2e-tests/New-E2ETestSet.ps1
@@ -57,16 +119,20 @@ confirm each row's "Expect" column.
 Re-running the generator wipes and rebuilds `generated/` from scratch
 (pass `-NoClean` to add/update files in place instead).
 
-## Verifying a deployed set
+## Verifying a deployed set (step 3)
 
-Work through `generated/CHECKLIST.md` by hand for the things only a human can
-judge - but everything the tenant can simply be *asked* is automated:
+**When:** straight after deploying a root, and any time you touch script
+content, encoding, upload, settings or assignments. Everything the tenant can
+simply be *asked* is checked here; `generated/CHECKLIST.md` is left holding only
+what a human has to judge.
 
 ```
 pwsh e2e-tests/Test-E2EDeployedSet.ps1 -Path e2e-tests/generated/main
 ```
 
-Run it straight after deploying that root. It re-parses the same local scripts
+Point `-Path` at a root you have already deployed - it verifies what is in the
+tenant against what is on disk, and does not deploy anything itself. It
+re-parses the same local scripts
 the wizard did, reads each one back out of Intune, and checks:
 
 - the script exists under its expected display name
@@ -85,7 +151,12 @@ It's read-only, so it's safe to re-run at any point. Add `-AllowTypeOverride` if
 the deploy being verified used that flag. Exit code is `0` when everything
 matched, `1` otherwise.
 
-## Backup/restore check
+## Backup/restore check (step 4)
+
+**When:** any change to `lib/Backup.ps1`, the backup schema, `-Restore`/
+`-RestoreAll`, or how script content is read back out of Graph - and once before
+every release. It needs no generated set and takes about a minute, so it is
+cheap enough to re-run on each iteration while working on that code.
 
 `New-E2ETestSet.ps1` only ever creates new scripts, so nothing in the generated
 set exercises the update -> backup -> restore path. That path is the one where a
@@ -118,7 +189,11 @@ tenant once, up front; the wizard runs it drives are non-interactive.
 Exit code is `0` when every check passed, `1` otherwise, so it can be wired into
 a pipeline against a dev tenant.
 
-## Cleaning up
+## Cleaning up (step 6)
+
+**When:** at the end of every cycle, and before starting a new one - a leftover
+batch from a previous run is what turns a fresh deploy into a pile of fuzzy-match
+prompts. Always dry-run first.
 
 ```
 pwsh e2e-tests/Remove-E2ETestSet.ps1              # dry run - lists matches, deletes nothing
