@@ -9,7 +9,7 @@
 
 # "Scopes" are the specific permissions this app asks the signed-in user (or
 # admin) to grant, e.g. "let me read and write Intune device management config".
-$script:RequiredScopes = @('DeviceManagementConfiguration.ReadWrite.All')
+$script:RequiredScopes = @('DeviceManagementConfiguration.ReadWrite.All', 'DeviceManagementScripts.ReadWrite.All')
 
 # Only requested when at least one script names a group by display name rather
 # than by GUID. Asking for it unconditionally would force every user to re-consent

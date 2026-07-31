@@ -1,5 +1,9 @@
 # Change history
 
+### v1.8.2 (2026-07-31)
+
+Fixed sign-in requesting only `DeviceManagementConfiguration.ReadWrite.All`, which is not sufficient to read or write Intune device management scripts. `Connect-WizardGraph` now also requests `DeviceManagementScripts.ReadWrite.All`, so reading existing scripts no longer fails with a 403 asking for `DeviceManagementScripts.Read.All`/`ReadWrite.All`.
+
 ### v1.8.1 (2026-07-31)
 
 Changed the missing-modules install prompt's default answer from no to yes: pressing Enter with no input now installs the two required Graph modules instead of declining. Typing `n`/`no` still declines.

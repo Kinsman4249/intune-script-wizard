@@ -130,8 +130,9 @@ List available backups with `./Deploy-IntuneScripts.ps1 -ListBackups`.
 ## Prerequisites
 
 - PowerShell 7+ (`pwsh`).
-- An account with the `DeviceManagementConfiguration.ReadWrite.All` Graph
-  scope (e.g. Intune Administrator).
+- An account with the `DeviceManagementConfiguration.ReadWrite.All` and
+  `DeviceManagementScripts.ReadWrite.All` Graph scopes (e.g. Intune
+  Administrator).
 
 The script installs only the two modules it actually needs -
 `Microsoft.Graph.Authentication` and `Microsoft.Graph.Beta.DeviceManagement` -
