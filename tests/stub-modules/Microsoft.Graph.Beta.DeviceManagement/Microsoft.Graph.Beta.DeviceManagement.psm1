@@ -8,6 +8,19 @@ function Add-StubCall2 {
         Add-Content -LiteralPath $env:WIZTEST_CALLS
 }
 
+function Deny-StubScopeTag2 {
+    # 'rejectScopeTag' names a scope tag id the fake tenant refuses, the way a
+    # real one refuses a tag that has been deleted since the backup was taken.
+    # A write carrying it is turned down whole - which is the point: the
+    # script's content never lands either, unless the caller retries.
+    param($State, [string[]]$RoleScopeTagIds)
+
+    $reject = [string]$State['rejectScopeTag']
+    if ($reject -and (@($RoleScopeTagIds) -contains $reject)) {
+        throw "Stub: tenant rejected the request - invalid role scope tag id '$reject'"
+    }
+}
+
 function ConvertTo-StubScriptObject {
     param($H)
     # scriptContent is Edm.Binary on the wire, and the real SDK deserialises it
@@ -28,7 +41,7 @@ function ConvertTo-StubScriptObject {
         ScriptContent         = $contentBytes
         RunAsAccount          = $H['runAsAccount']
         EnforceSignatureCheck = [bool]$H['enforceSignatureCheck']
-        RunAs32BitOnWindows64 = [bool]$H['runAs32Bit']
+        RunAs32Bit            = [bool]$H['runAs32Bit']
         RoleScopeTagIds       = @($H['roleScopeTagIds'])
         LastModifiedDateTime  = [datetimeoffset]::Parse($H['lastModifiedDateTime'])
     }
@@ -42,6 +55,10 @@ function Get-MgBetaDeviceManagementScript {
     )
     $state = Get-StubState2
     if ($DeviceManagementScriptId) {
+        # 'getError' makes a single-script read fail the way a throttle or an
+        # outage does, as opposed to the "not found" below. The two must not be
+        # treated alike: only the second one means the script was deleted.
+        if ($state['getError']) { throw [string]$state['getError'] }
         $found = $state['scripts'] | Where-Object { $_['id'] -eq $DeviceManagementScriptId }
         if (-not $found) { throw "Stub: script $DeviceManagementScriptId not found" }
         return ConvertTo-StubScriptObject $found
@@ -67,6 +84,7 @@ function New-MgBetaDeviceManagementScript {
     if ($state['failCreate'] -and $DisplayName -eq $state['failCreate']) {
         throw "Stub: tenant rejected '$DisplayName' (BadRequest)"
     }
+    Deny-StubScopeTag2 -State $state -RoleScopeTagIds $RoleScopeTagIds
     $id = "new-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     $bytes = [System.IO.File]::ReadAllBytes($ScriptContentInputFile)
     $state['scripts'] += @{
@@ -93,6 +111,7 @@ function Update-MgBetaDeviceManagementScript {
         roleScopeTagIds = @($RoleScopeTagIds)
     }
     $state = Get-StubState2
+    Deny-StubScopeTag2 -State $state -RoleScopeTagIds $RoleScopeTagIds
     foreach ($s in $state['scripts']) {
         if ($s['id'] -ne $DeviceManagementScriptId) { continue }
         $s['displayName'] = $DisplayName

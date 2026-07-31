@@ -18,7 +18,7 @@
         round-tripped through the wrong base64 handling.
       - runAsAccount matches the user//device/ folder (or #type:)
       - enforceSignatureCheck matches #scriptcheck:
-      - runAs32BitOnWindows64 matches #host:
+      - runAs32Bit matches #host:
       - the assignment set matches #group:/#excludegroup:/#noassignments, target
         for target, with no extras left over from an earlier run
 
@@ -145,8 +145,8 @@ try {
             "expected '$($meta.RunAsAccount)', tenant has '$($full.RunAsAccount)'"
         Check 'enforceSignatureCheck matches' ([bool]$full.EnforceSignatureCheck -eq [bool]$meta.EnforceSignatureCheck) `
             "expected $([bool]$meta.EnforceSignatureCheck), tenant has $([bool]$full.EnforceSignatureCheck)"
-        Check 'runAs32Bit matches' ([bool]$full.RunAs32BitOnWindows64 -eq [bool]$meta.RunAs32Bit) `
-            "expected $([bool]$meta.RunAs32Bit), tenant has $([bool]$full.RunAs32BitOnWindows64)"
+        Check 'runAs32Bit matches' ([bool]$full.RunAs32Bit -eq [bool]$meta.RunAs32Bit) `
+            "expected $([bool]$meta.RunAs32Bit), tenant has $([bool]$full.RunAs32Bit)"
         Check 'fileName matches' ([string]$full.FileName -eq $meta.FileName) `
             "expected '$($meta.FileName)', tenant has '$($full.FileName)'"
         Check 'description matches' ([string]$full.Description -eq [string]$meta.Description) `

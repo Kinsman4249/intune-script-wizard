@@ -76,7 +76,17 @@
 .PARAMETER RestoreAll
     Treats -Restore as a folder instead of a single file, and restores every
     *.json backup directly inside it (not recursive - restored ones already
-    moved to backup-restored/ are skipped automatically).
+    moved to backup-restored/ are skipped automatically). Where the folder
+    holds more than one backup of the SAME script, only the oldest is restored
+    - that is the one that undoes everything the folder recorded - and the
+    others are named in a warning and left on disk for -Restore to take one at
+    a time. Files that aren't wizard backups are skipped, not failed.
+
+.PARAMETER SkipAssignments
+    Restore the script itself and leave its current assignments alone. For when
+    the assign step cannot succeed at all: groups named in the backup that have
+    been deleted since, or a backup being restored into a different tenant.
+    Only valid with -Restore.
 
 .PARAMETER ListBackups
     List available backup files under -Path/backups and exit.
@@ -98,6 +108,7 @@ param(
     [switch]$StopOnError,
     [string]$Restore,
     [switch]$RestoreAll,
+    [switch]$SkipAssignments,
     [switch]$ListBackups,
     [ValidateSet('None', 'Console', 'File', 'Both')]
     [string]$DebugLog = 'None'
@@ -164,16 +175,12 @@ function Resolve-FuzzyAction {
     # input entirely - including its default branch - so the function returned
     # nothing and the caller fell through to creating a duplicate. Coercing to a
     # string makes end-of-input land on the documented default of Skip.
-    $choice = [string](Read-Host "[S]kip / [R]eplace existing / create [side-by-side]?")
-    # "switch -Regex" tests $choice against each pattern in order and runs the
-    # first one that matches. '^r' means "starts with r" (Replace), '^si' means
-    # "starts with si" (SideBySide), and 'default' catches everything else -
-    # including "skip", an empty string, or a typo - so those all mean Skip.
-    switch -Regex ($choice) {
-        '^r'  { return 'Replace' }
-        '^si' { return 'SideBySide' }
-        default { return 'Skip' }
-    }
+    $choice = [string](Read-Host "[S]kip / [R]eplace existing / [C]reate side-by-side?")
+    # See ConvertTo-WizardFuzzyChoice in lib/Matching.ps1 for how an answer is
+    # read. The prompt used to end "create [side-by-side]?" while only
+    # accepting an answer starting 'si', so typing the word it asked for -
+    # "create" - fell through to the default and silently skipped the script.
+    return (ConvertTo-WizardFuzzyChoice -Choice $choice)
 }
 
 # After we create or update a script in Intune, we record that fact in $Registry
@@ -422,6 +429,11 @@ function Invoke-WizardRun {
     if ($RestoreAll -and -not $Restore) {
         throw "-RestoreAll needs -Restore to point at the folder of backups to restore."
     }
+    # Silently ignoring it would leave someone believing a deploy had skipped
+    # assignments when it had not.
+    if ($SkipAssignments -and -not $Restore) {
+        throw "-SkipAssignments only applies to a restore. Add -Restore <file|folder>, or drop the switch."
+    }
 
     if ($Restore) {
         # -DryRun cannot be honoured here - a restore is a single write with
@@ -433,7 +445,7 @@ function Invoke-WizardRun {
 
         if (-not $RestoreAll) {
             Connect-WizardGraph
-            Restore-WizardBackup -BackupFile $Restore | Out-Null
+            Restore-WizardBackup -BackupFile $Restore -SkipAssignments:$SkipAssignments | Out-Null
             return $script:WizardExitOk
         }
 
@@ -448,14 +460,29 @@ function Invoke-WizardRun {
             return $script:WizardExitOk
         }
 
+        # Several backups of one script is the normal state of a backups/
+        # folder, and restoring all of them just replays that script's history
+        # in an order nobody chose - see Select-WizardRestoreSet.
+        $plan = Select-WizardRestoreSet -Files $files
+        foreach ($file in $plan.Ignored) {
+            Write-Warning "Skipping '$($file.Name)': it is not a wizard backup (no Id/ScriptContent/SchemaVersion in it)."
+        }
+        foreach ($entry in $plan.Superseded) {
+            Write-Warning "Skipping '$($entry.File.Name)': a later backup of the same script ($($entry.Id)), and restoring the oldest is what undoes the whole folder. Restore this one on its own with -Restore if that is the state you want."
+        }
+        if ($plan.Restore.Count -eq 0) {
+            Write-Host "Nothing to restore: none of the $($files.Count) .json file(s) directly under $Restore is a wizard backup."
+            return $script:WizardExitOk
+        }
+
         Connect-WizardGraph
-        Write-Host "Restoring $($files.Count) backup(s) from $Restore..."
+        Write-Host "Restoring $($plan.Restore.Count) backup(s) from $Restore..."
         $restoreFailures = @()
-        foreach ($file in $files) {
+        foreach ($file in ($plan.Restore | ForEach-Object { $_.File })) {
             Write-Host ""
             Write-Host "== $($file.Name) ==" -ForegroundColor Cyan
             try {
-                Restore-WizardBackup -BackupFile $file.FullName | Out-Null
+                Restore-WizardBackup -BackupFile $file.FullName -SkipAssignments:$SkipAssignments | Out-Null
             } catch {
                 # One backup's failure says nothing about the next one's, so the
                 # run keeps going and reports everything at the end - same as
@@ -466,7 +493,7 @@ function Invoke-WizardRun {
         }
 
         Write-Host ""
-        $restoredCount = $files.Count - $restoreFailures.Count
+        $restoredCount = $plan.Restore.Count - $restoreFailures.Count
         if ($restoreFailures.Count -gt 0) {
             Write-Host "$restoredCount restored, $($restoreFailures.Count) failed" -ForegroundColor Yellow
             Write-Host "Failed:" -ForegroundColor Red

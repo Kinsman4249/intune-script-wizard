@@ -103,7 +103,7 @@ unchanged content).
 - **Identical content already deployed under a different name**, or a
   **fuzzy name/description match** (similar but not identical) - you're
   prompted per script: **[S]kip**, **[R]eplace** the existing one (backed up
-  first), or create it **side-by-side**. Pass `-OnFuzzyMatch Skip|Replace|SideBySide`
+  first), or **[C]reate** it side-by-side. Pass `-OnFuzzyMatch Skip|Replace|SideBySide`
   to resolve these non-interactively for unattended runs.
 
 The fuzzy score is Levenshtein similarity on the display name, weighted 70/30
@@ -148,6 +148,28 @@ That restores every `*.json` directly inside the folder (not recursive, and
 already-restored ones under `backup-restored/` are skipped). Each is restored
 independently, so one failure doesn't stop the rest - the summary at the end
 lists what did and didn't make it, and the run exits `2` if any failed.
+
+Where the folder holds **more than one backup of the same script** - normal
+after a few runs - only the **oldest** is restored, because that is the one
+that undoes everything the folder recorded. The others are named in a warning
+and left on disk, still restorable one at a time with `-Restore` if a later
+revision is the state you actually want. Files that aren't wizard backups are
+skipped with a warning rather than counted as failures.
+
+If the assign step can't succeed at all - groups named in the backup have been
+deleted since, or you're restoring into a different tenant - add
+`-SkipAssignments` to restore the script itself and leave its current
+assignments alone:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -Restore ./backups/Some-Script_20260728-193000.json -SkipAssignments
+```
+
+Role scope tags are handled without needing a switch: if the tenant rejects the
+restore over a scope tag that no longer exists, it is retried once with the
+built-in Default tag and warns, rather than failing the whole restore over
+metadata nobody was trying to recover.
+
 `-Restore` can't be combined with `-DryRun`: a restore has nothing to preview,
 and running it anyway would change the tenant for someone who asked for no
 changes.
@@ -230,6 +252,7 @@ rather than failing later on a confusing `403`.
 | `-StopOnError` | Abandon the run at the first failure |
 | `-AcceptModuleInstall` | Install missing Graph modules without prompting |
 | `-Restore <file>` | Restore one backup (add `-RestoreAll` for a whole folder) |
+| `-SkipAssignments` | With `-Restore`: restore content only, leave assignments as they are |
 | `-ListBackups` | List available backups and exit |
 | `-DebugLog None\|Console\|File\|Both` | Trace Graph URLs, bodies and match scores |
 

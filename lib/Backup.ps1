@@ -3,6 +3,24 @@
 # one afterwards. Split out of GraphOps.ps1 because it is a self-contained
 # concern with its own on-disk schema to version.
 
+function Get-WizardScriptRunAs32Bit {
+    # Reads runAs32Bit off a script object returned by the SDK.
+    #
+    # Its own function because this property is easy to name wrongly and
+    # impossible to notice when you do: PowerShell hands back $null for a
+    # property that isn't there, [bool]$null is $false, and $false is itself a
+    # legitimate value. A typo therefore writes "runs 64-bit" into every backup
+    # and silently flips the setting on the way back in, which is exactly what
+    # reading a non-existent RunAs32BitOnWindows64 used to do here.
+    param([Parameter(Mandatory)]$Script)
+
+    $property = $Script.PSObject.Properties['RunAs32Bit']
+    if (-not $property) {
+        throw "The Graph SDK returned script $($Script.Id) with no RunAs32Bit property, so a backup of it would restore under the wrong PowerShell host. Refusing to change it. This normally means the installed Microsoft.Graph.Beta.DeviceManagement module has renamed the property - check for a wizard update."
+    }
+    return [bool]$property.Value
+}
+
 function Backup-WizardScript {
     # Snapshots an existing script's full state to disk before it is changed.
     # param() declares this function's inputs; Mandatory means the caller must
@@ -67,7 +85,7 @@ function Backup-WizardScript {
         ScriptContent          = [System.Convert]::ToBase64String($contentBytes)
         RunAsAccount           = $full.RunAsAccount.ToString()
         EnforceSignatureCheck  = [bool]$full.EnforceSignatureCheck
-        RunAs32Bit             = [bool]$full.RunAs32BitOnWindows64
+        RunAs32Bit             = Get-WizardScriptRunAs32Bit -Script $full
         RoleScopeTagIds        = @($full.RoleScopeTagIds)
         Assignments            = $assignments
         BackedUpAt             = (Get-Date).ToString('o')
@@ -91,6 +109,26 @@ function Backup-WizardScript {
 
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
     $path = Join-Path $BackupDir "$safeName`_$stamp.json"
+
+    # The timestamp only resolves to the second, and the sanitising above maps
+    # every awkward character to '_', so two scripts backed up by the same run
+    # can easily want the same file name: 'Payroll Script (v1)' and 'Payroll
+    # Script [v1]' both become 'Payroll_Script__v1_', as do any two names that
+    # differ only past the 100-character truncation. Save-WizardJsonFile moves
+    # into place with -Force, so without this the second backup would silently
+    # overwrite the first - leaving that first script updated with nothing to
+    # roll it back to, which only shows up on the day someone needs it.
+    $attempt = 2
+    while (Test-Path -LiteralPath $path) {
+        if ($attempt -gt 99) {
+            # Pathological (a folder already full of same-second collisions):
+            # stop counting and take a random name rather than looping.
+            $path = Join-Path $BackupDir "$safeName`_$stamp-$([guid]::NewGuid().ToString('N').Substring(0, 8)).json"
+            break
+        }
+        $path = Join-Path $BackupDir "$safeName`_$stamp-$attempt.json"
+        $attempt++
+    }
 
     try {
         # Atomic: a backup that exists must be complete, because the update that
@@ -262,11 +300,59 @@ function Remove-WizardOrphanReplacement {
     }
 }
 
+function Test-WizardScopeTagRejection {
+    # True when Graph turned a write down over its role scope tags.
+    #
+    # A backup can carry scope tag ids that no longer mean anything: the tag
+    # was deleted since, or the backup came from a different tenant. Graph
+    # rejects the whole request for that, so the script's content never lands -
+    # a total restore failure over metadata nobody was trying to restore, at
+    # the exact moment someone needs the content back.
+    param([Parameter(Mandatory)]$ErrorRecord)
+
+    return ((Get-WizardErrorSummary -ErrorRecord $ErrorRecord) -match '(?i)scope\s*tag')
+}
+
+function Invoke-WizardScopeTagFallback {
+    # Runs one restore write, and if the tenant rejects it over role scope
+    # tags, runs it exactly once more with the built-in Default tag only.
+    # Losing a scope tag assignment is a minute's work in the portal; losing
+    # the restore itself, during whatever incident prompted it, is not.
+    param(
+        # Takes the scope tags to use and performs the write. A scriptblock is
+        # a chunk of code held in a variable; '& $Write $tags' runs it.
+        [Parameter(Mandatory)][scriptblock]$Write,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$RoleScopeTagIds,
+        # Named in the warning, e.g. "Restoring 'Payroll script'".
+        [Parameter(Mandatory)][string]$What
+    )
+
+    try {
+        return (& $Write $RoleScopeTagIds)
+    } catch {
+        if (-not (Test-WizardScopeTagRejection -ErrorRecord $_)) { throw }
+        # Already down to the Default tag: there is nothing left to fall back
+        # to, so let the caller's own error message describe the failure.
+        if (($RoleScopeTagIds -join ',') -eq '0') { throw }
+
+        Write-Warning "$What was rejected over its role scope tags ($($RoleScopeTagIds -join ', ')): $(Get-WizardErrorSummary -ErrorRecord $_). Retrying with the built-in Default tag only - re-apply the original scope tags in the Intune portal if they still exist and you still need them."
+        return (& $Write @('0'))
+    }
+}
+
 function Restore-WizardBackup {
     # One-command restore of a backup produced by Backup-WizardScript.
     # Reads a backup JSON file back off disk and pushes it to Intune, either
     # updating the original script if it still exists or recreating it fresh.
-    param([Parameter(Mandatory)][string]$BackupFile)
+    param(
+        [Parameter(Mandatory)][string]$BackupFile,
+        # Restore the script itself and leave its current assignments alone.
+        # For the case the assign step cannot be made to work at all: groups
+        # named in the backup that were deleted since, or a backup being
+        # restored into a different tenant, where the content is recoverable
+        # and the targets are not.
+        [switch]$SkipAssignments
+    )
 
     # -PathType Leaf means "must be a file, not a folder".
     if (-not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
@@ -298,26 +384,48 @@ function Restore-WizardBackup {
     # above is cleaned up either way.
     try {
         $exists = $null
-        # Nested try/catch: a "not found" error here just means we treat this
-        # as a fresh recreate rather than an update, so it is swallowed quietly.
-        try { $exists = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id'] } catch { $exists = $null }
+        # Nested try/catch: a "not found" error here means the script really is
+        # gone and this becomes a recreate. Nothing else does. Swallowing every
+        # error (what this used to do) turned a throttle, an outage or an
+        # expired token into a "deletion", which recreated a script that was
+        # still live - two copies in the tenant, the assignments moved to the
+        # copy, and the backup filed away as though it had all worked.
+        try {
+            $exists = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id']
+        } catch {
+            if (-not (Test-WizardGraphNotFound -ErrorRecord $_)) {
+                throw "Could not check whether script $($backup['Id']) still exists: $(Get-WizardErrorSummary -ErrorRecord $_). Nothing was changed and '$BackupFile' is untouched, so this can be retried once the tenant is answering again."
+            }
+            $exists = $null
+        }
 
-        $roleScopeTagIds = @($backup['RoleScopeTagIds'])
-        if ($roleScopeTagIds.Count -eq 0) { $roleScopeTagIds = @('0') }  # '0' is the built-in Default tag
+        # Where-Object earns its place here: a backup written before scope tags
+        # were captured at all (schema 1) has no RoleScopeTagIds key, and
+        # @($null) is a ONE-element array, so a bare .Count test reads that as
+        # "one scope tag" and posts an empty id that Graph rejects - making
+        # precisely the oldest backups the ones that cannot be restored.
+        # '0' is the built-in Default tag.
+        $roleScopeTagIds = @(@($backup['RoleScopeTagIds']) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ($roleScopeTagIds.Count -eq 0) { $roleScopeTagIds = @('0') }
 
         if ($exists) {
             Write-Host "Restoring '$($backup['DisplayName'])' over existing script $($backup['Id'])..."
             try {
-                Update-MgBetaDeviceManagementScript `
-                    -DeviceManagementScriptId $backup['Id'] `
-                    -DisplayName $backup['DisplayName'] `
-                    -Description $backup['Description'] `
-                    -FileName $backup['FileName'] `
-                    -ScriptContentInputFile $tempScript `
-                    -RunAsAccount $backup['RunAsAccount'] `
-                    -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
-                    -RunAs32Bit:$backup['RunAs32Bit'] `
-                    -RoleScopeTagIds $roleScopeTagIds | Out-Null
+                Invoke-WizardScopeTagFallback -RoleScopeTagIds $roleScopeTagIds `
+                    -What "Restoring '$($backup['DisplayName'])'" -Write {
+                        param([string[]]$Tags)
+                        Update-MgBetaDeviceManagementScript `
+                            -DeviceManagementScriptId $backup['Id'] `
+                            -DisplayName $backup['DisplayName'] `
+                            -Description $backup['Description'] `
+                            -FileName $backup['FileName'] `
+                            -ScriptContentInputFile $tempScript `
+                            -RunAsAccount $backup['RunAsAccount'] `
+                            -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
+                            -RunAs32Bit:$backup['RunAs32Bit'] `
+                            -RoleScopeTagIds $Tags | Out-Null
+                    }
             } catch {
                 throw "Restoring '$($backup['DisplayName'])' over $($backup['Id']) failed: $(Get-WizardErrorSummary -ErrorRecord $_). The script is unchanged or partly changed; the backup file is intact and can be retried."
             }
@@ -325,15 +433,19 @@ function Restore-WizardBackup {
         } else {
             Write-Host "Original script $($backup['Id']) no longer exists - recreating '$($backup['DisplayName'])' (new Id will be assigned)..."
             try {
-                $created = New-MgBetaDeviceManagementScript `
-                    -DisplayName $backup['DisplayName'] `
-                    -Description $backup['Description'] `
-                    -FileName $backup['FileName'] `
-                    -ScriptContentInputFile $tempScript `
-                    -RunAsAccount $backup['RunAsAccount'] `
-                    -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
-                    -RunAs32Bit:$backup['RunAs32Bit'] `
-                    -RoleScopeTagIds $roleScopeTagIds
+                $created = Invoke-WizardScopeTagFallback -RoleScopeTagIds $roleScopeTagIds `
+                    -What "Recreating '$($backup['DisplayName'])'" -Write {
+                        param([string[]]$Tags)
+                        New-MgBetaDeviceManagementScript `
+                            -DisplayName $backup['DisplayName'] `
+                            -Description $backup['Description'] `
+                            -FileName $backup['FileName'] `
+                            -ScriptContentInputFile $tempScript `
+                            -RunAsAccount $backup['RunAsAccount'] `
+                            -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
+                            -RunAs32Bit:$backup['RunAs32Bit'] `
+                            -RoleScopeTagIds $Tags
+                    }
             } catch {
                 throw "Recreating '$($backup['DisplayName'])' from the backup failed: $(Get-WizardErrorSummary -ErrorRecord $_)"
             }
@@ -352,10 +464,15 @@ function Restore-WizardBackup {
         # One full replacement: whatever the backup held becomes the whole set.
         # @(...) as above - a backup with no assignments must still post an
         # empty set rather than collapsing to $null.
-        try {
-            Set-WizardWholeAssignment -Id $targetId -Assignments @(Get-WizardRestoreAssignments -Backup $backup)
-        } catch {
-            throw "'$($backup['DisplayName'])' ($targetId) was restored but its assignments were not: $(Get-WizardErrorSummary -ErrorRecord $_). The restored content is live against whatever assignments the script had before."
+        $restoreAssignments = @(Get-WizardRestoreAssignments -Backup $backup)
+        if ($SkipAssignments) {
+            Write-Warning "-SkipAssignments: '$($backup['DisplayName'])' ($targetId) keeps whatever assignments it has now; the $($restoreAssignments.Count) assignment(s) in the backup were not applied. Set them in the Intune portal, or re-run the restore without the switch once the targets exist."
+        } else {
+            try {
+                Set-WizardWholeAssignment -Id $targetId -Assignments $restoreAssignments
+            } catch {
+                throw "'$($backup['DisplayName'])' ($targetId) was restored but its assignments were not: $(Get-WizardErrorSummary -ErrorRecord $_). The restored content is live against whatever assignments the script had before. If those groups no longer exist (or this backup came from another tenant), re-run with -SkipAssignments to restore the script alone."
+            }
         }
 
         Write-Host "Restore complete: $targetId" -ForegroundColor Green
@@ -376,13 +493,18 @@ function Move-WizardRestoredBackup {
     param([Parameter(Mandatory)][string]$BackupFile)
 
     try {
-        $sourceDir = Split-Path -Parent $BackupFile
+        # GetFullPath first: for a backup named on the command line as a bare
+        # file name in the current directory, Split-Path -Parent returns an
+        # empty string, which Join-Path then refuses - turning a successful
+        # restore into a warning about tidying up.
+        $fullPath = [System.IO.Path]::GetFullPath($BackupFile)
+        $sourceDir = Split-Path -Parent $fullPath
         $restoredDir = Join-Path $sourceDir 'backup-restored'
         if (-not (Test-Path -LiteralPath $restoredDir)) {
             New-Item -ItemType Directory -Path $restoredDir -Force -ErrorAction Stop | Out-Null
         }
 
-        $destination = Join-Path $restoredDir (Split-Path -Leaf $BackupFile)
+        $destination = Join-Path $restoredDir (Split-Path -Leaf $fullPath)
         if (Test-Path -LiteralPath $destination) {
             # Same filename restored twice (backups are timestamped, but a
             # hand-copied file could still collide): don't clobber the earlier one.
@@ -393,5 +515,79 @@ function Move-WizardRestoredBackup {
         Write-Host "  Moved restored backup -> $destination" -ForegroundColor DarkGray
     } catch {
         Write-Warning "Restore succeeded, but could not move '$BackupFile' into backup-restored/: $($_.Exception.Message). It's still in its original location."
+    }
+}
+
+function Select-WizardRestoreSet {
+    # Decides which of a folder's backups -RestoreAll should actually restore,
+    # and in what order.
+    #
+    # A backups/ folder normally holds SEVERAL backups of the same script - one
+    # per run that changed it. Restoring all of them just replays that history
+    # against the tenant, and the file applied last is the one that sticks:
+    # with Get-ChildItem's name ordering, and a file name that starts with the
+    # display name, that is whichever NAME sorts later rather than whichever
+    # backup is newer, so a script renamed between two backups lands on an
+    # arbitrary revision with nothing reported. Restoring the OLDEST backup per
+    # script is the only reading of "undo this folder" that holds up: it puts
+    # each script back the way it was before these changes began. The newer
+    # ones are left on disk and named in a warning, still restorable one at a
+    # time with -Restore if that is the state someone actually wants.
+    #
+    # Returns three lists: what to restore (oldest per script, chronological),
+    # what was passed over, and any file in the folder that is not a backup.
+    param([Parameter(Mandatory)][AllowEmptyCollection()][array]$Files)
+
+    $entries = @()
+    $ignored = @()
+
+    foreach ($file in $Files) {
+        $data = $null
+        # A file that cannot be read or parsed is NOT skipped here: it stays in
+        # the restore list so it fails loudly, with the shape checker's own
+        # message, rather than disappearing from the run silently.
+        try { $data = Read-WizardJsonFile -Path $file.FullName -AsHashtable } catch { $data = $null }
+
+        if ($data -is [hashtable] -and
+            -not $data.ContainsKey('Id') -and
+            -not $data.ContainsKey('ScriptContent') -and
+            -not $data.ContainsKey('SchemaVersion')) {
+            # Valid JSON carrying none of a backup's identifying fields: it is
+            # somebody else's file sharing the folder. Skipping it stops one
+            # stray note.json from making an otherwise clean run exit 2.
+            $ignored += $file
+            continue
+        }
+
+        $id = if ($data -is [hashtable]) { [string]$data['Id'] } else { '' }
+
+        # BackedUpAt is what the backup itself says; the file's own timestamp is
+        # the fallback for a backup old enough to predate that field.
+        $stamp = $file.LastWriteTimeUtc
+        if ($data -is [hashtable] -and $data['BackedUpAt']) {
+            $parsed = [datetimeoffset]::MinValue
+            if ([datetimeoffset]::TryParse([string]$data['BackedUpAt'], [ref]$parsed)) {
+                $stamp = $parsed.UtcDateTime
+            }
+        }
+
+        $entries += [pscustomobject]@{ File = $file; Id = $id; BackedUpAt = $stamp }
+    }
+
+    $restore = @()
+    $superseded = @()
+    # Group by the script id inside each file. Entries with no readable id get
+    # a group to themselves (keyed on their path) so that none of them is
+    # dropped as a "duplicate" of another unreadable file.
+    foreach ($group in ($entries | Group-Object { if ($_.Id) { $_.Id } else { "unreadable:$($_.File.FullName)" } })) {
+        $ordered = @($group.Group | Sort-Object BackedUpAt)
+        $restore += $ordered[0]
+        if ($ordered.Count -gt 1) { $superseded += $ordered[1..($ordered.Count - 1)] }
+    }
+
+    return [pscustomobject]@{
+        Restore    = @($restore | Sort-Object BackedUpAt)
+        Superseded = @($superseded | Sort-Object BackedUpAt)
+        Ignored    = @($ignored)
     }
 }

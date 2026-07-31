@@ -4,6 +4,29 @@
 
 # Turns a script's content into a short "fingerprint" (hash) so two scripts with
 # identical content can be recognized as duplicates without comparing every byte.
+function ConvertTo-WizardFuzzyChoice {
+    # Maps whatever was typed at the duplicate prompt onto one of the three
+    # actions. Its own function so the mapping can be tested directly - the
+    # prompt itself needs a real console, which a test run does not have.
+    #
+    # Both the word people actually type ('create') and the label in the prompt
+    # ('side-by-side') mean the same thing, so 'c' and 'si' both land there.
+    # Bare 's' stays Skip: it is the first word in the prompt and the safe
+    # reading, and anyone meaning side-by-side has 'si' or 'c' to say so.
+    # Anything unrecognised - including empty input, which is what Read-Host
+    # returns at end-of-input - is Skip, the choice that changes nothing.
+    param([Parameter(Mandatory)][AllowNull()][AllowEmptyString()][string]$Choice)
+
+    $value = ([string]$Choice).Trim()
+    # switch -Regex tests the value against each pattern in order and runs the
+    # first branch that matches; 'return' stops any later branch running.
+    switch -Regex ($value) {
+        '^r'      { return 'Replace' }
+        '^(si|c)' { return 'SideBySide' }
+        default   { return 'Skip' }
+    }
+}
+
 function Get-WizardBytesHash {
     # SHA256 of a byte array, lower-cased hex. Used for content downloaded from
     # Intune; the local-file side goes through Get-WizardFileHash. Both must

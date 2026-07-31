@@ -142,7 +142,7 @@ the wizard did, reads each one back out of Intune, and checks:
   to LF, a lost trailing newline, or content mangled by wrong base64 handling
 - `runAsAccount` matches the `user/`/`device/` folder (or `#type:`)
 - `enforceSignatureCheck` matches `#scriptcheck:`
-- `runAs32BitOnWindows64` matches `#host:`
+- `runAs32Bit` matches `#host:`
 - `fileName` and the description match what was parsed locally
 - the assignment set matches `#group:`/`#excludegroup:`/`#noassignments`
   exactly, target for target, with nothing left over from an earlier run

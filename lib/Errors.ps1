@@ -56,6 +56,91 @@ function Get-WizardErrorSummary {
     return $message
 }
 
+# Normalises whatever shape an HTTP status arrived in into a plain number.
+# 404, '404', [System.Net.HttpStatusCode]::NotFound and the bare string
+# 'NotFound' have all been handed back by one SDK version or another.
+# Returns $null when the value isn't a status at all.
+function ConvertTo-WizardHttpStatus {
+    param([Parameter(Mandatory)][AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $null }
+    # -as [int] returns $null instead of throwing when the value can't convert,
+    # which is what makes it usable as a test rather than a cast.
+    $number = $Value -as [int]
+    if ($null -ne $number -and $number -ge 100 -and $number -le 599) { return $number }
+
+    $parsed = [System.Net.HttpStatusCode]::OK
+    # [ref] passes the variable itself so TryParse can write the result into it;
+    # $true asks for a case-insensitive match on the name.
+    if ([enum]::TryParse([System.Net.HttpStatusCode], [string]$Value, $true, [ref]$parsed)) {
+        return [int]$parsed
+    }
+    return $null
+}
+
+# Digs the HTTP status out of a caught Graph failure, or returns $null when
+# there is none to find (a local error, a test stub, an SDK version that
+# surfaces it somewhere else). The SDK has put the status under several
+# different property names over time, so this checks each of them down the
+# inner-exception chain rather than trusting a single shape.
+function Get-WizardGraphStatusCode {
+    param([Parameter(Mandatory)][AllowNull()]$ErrorRecord)
+
+    if (-not $ErrorRecord) { return $null }
+
+    $exception = $ErrorRecord.Exception
+    $depth = 0
+    # Bounded for the same reason Get-WizardErrorDetail bounds its walk: a
+    # malformed exception chain must not become the thing that hangs the run.
+    while ($exception -and $depth -lt 5) {
+        foreach ($name in @('HttpStatus', 'StatusCode', 'ResponseStatusCode')) {
+            # .PSObject.Properties[...] asks "does this object have a property
+            # by that name?" without throwing when it doesn't.
+            $property = $exception.PSObject.Properties[$name]
+            if ($property -and $null -ne $property.Value) {
+                $code = ConvertTo-WizardHttpStatus -Value $property.Value
+                if ($null -ne $code) { return $code }
+            }
+        }
+        # Failures raised by the raw Invoke-MgGraphRequest path carry the
+        # response object itself rather than a status property.
+        $response = $exception.PSObject.Properties['Response']
+        if ($response -and $response.Value) {
+            $status = $response.Value.PSObject.Properties['StatusCode']
+            if ($status -and $null -ne $status.Value) {
+                $code = ConvertTo-WizardHttpStatus -Value $status.Value
+                if ($null -ne $code) { return $code }
+            }
+        }
+        $exception = $exception.InnerException
+        $depth++
+    }
+    return $null
+}
+
+# True only when a Graph failure means "that object is not there", as opposed
+# to a throttle (429), an outage (5xx) or an expired token (401).
+#
+# Restore branches on this. Reading a transient failure as a deletion recreates
+# a script that is still live in the tenant, which leaves two copies of it, the
+# assignments pointed at the copy, and the backup filed away as though the
+# restore had worked - so the default when this cannot be answered confidently
+# is "not a deletion", because that costs a retry rather than a duplicate.
+function Test-WizardGraphNotFound {
+    param([Parameter(Mandatory)][AllowNull()]$ErrorRecord)
+
+    if (-not $ErrorRecord) { return $false }
+
+    $status = Get-WizardGraphStatusCode -ErrorRecord $ErrorRecord
+    if ($null -ne $status) { return ($status -eq 404) }
+
+    # No status to read, so the message is all that is left. Matched narrowly
+    # on purpose: anything that isn't clearly a "not found" is treated as
+    # transient. (?i) makes the rest of the pattern case-insensitive.
+    $text = "$($ErrorRecord.Exception.Message) $($ErrorRecord.ErrorDetails.Message)"
+    return ($text -match '(?i)(^|\W)404(\W|$)|resourcenotfound|itemnotfound|does not exist|not\s*found')
+}
+
 # Builds a multi-line, detailed report of an error, meant for the debug log
 # (not the console) so a bug report has everything needed to diagnose it.
 function Get-WizardErrorDetail {
