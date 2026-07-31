@@ -1,5 +1,9 @@
 # Change history
 
+### v1.8.0 (2026-07-31)
+
+Hardened Graph sign-in against a wrong-tenant mistake. `Connect-WizardGraph` now disconnects any Microsoft Graph session already active in the process (e.g. one left over from an earlier `Connect-MgGraph` run by hand, or from a previous wizard run in the same shell) before signing in, so a session for one tenant can never be silently reused for another. Interactive runs are also asked to type back the connected account's domain before anything is created, updated, or restored - a mistaken tenant now has to be confirmed explicitly rather than clicked through. Unattended runs (scheduled tasks, CI) skip that prompt, since nobody is there to answer it, but still log the connected account/tenant. The wizard also now disconnects from Graph when it finishes, successfully or not, so no session is left open for an unrelated later run to inherit.
+
 ### v1.7.2 (2026-07-31)
 
 Fixed `New-E2ETestSet.ps1` failing to parse `e2e-metadata.json` when a hand-edited value (e.g. a `CONTOSO\GroupName` displayName) contained a literal backslash, which is invalid JSON unless escaped. The script now repairs the raw file text before parsing, doubling any backslash that isn't already part of a valid JSON escape sequence, so these values no longer need to be escaped by hand. If the file is still not valid JSON after the repair pass, the resulting error now names the file and the parser's message instead of surfacing a bare `ConvertFrom-Json` exception.

@@ -38,6 +38,10 @@ function Connect-MgGraph {
     Set-StubState $state
 }
 
+function Disconnect-MgGraph {
+    Add-StubCall 'Disconnect-MgGraph' @{}
+}
+
 function Invoke-MgGraphRequest {
     param(
         [string]$Method,
@@ -82,4 +86,4 @@ function Invoke-MgGraphRequest {
     throw "Stub Invoke-MgGraphRequest: unhandled $Method $Uri"
 }
 
-Export-ModuleMember -Function Get-MgContext, Connect-MgGraph, Invoke-MgGraphRequest
+Export-ModuleMember -Function Get-MgContext, Connect-MgGraph, Disconnect-MgGraph, Invoke-MgGraphRequest

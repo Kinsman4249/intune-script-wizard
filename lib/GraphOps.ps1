@@ -21,6 +21,56 @@ $script:GroupReadScope = 'GroupMember.Read.All'
 # 21Vianet without any per-cloud base URL of our own.
 $script:ScriptsUri = '/beta/deviceManagement/deviceManagementScripts'
 
+# Drops any Graph session already active in this process. Called both before
+# connecting (a session left over from an earlier run, or from a Connect-MgGraph
+# the operator ran by hand for a different tenant earlier in the same shell,
+# must never be silently reused) and once the wizard is finished. Best-effort:
+# a failed or unnecessary disconnect must never throw, since it runs from a
+# 'finally' block and must not mask the run's real exit code.
+function Disconnect-WizardGraph {
+    try {
+        # The auth module may not be imported yet (e.g. -ListBackups returns
+        # before Import-WizardModules ever runs), in which case there is no
+        # session to drop.
+        if (-not (Get-Command Get-MgContext -ErrorAction SilentlyContinue)) { return }
+        if (Get-MgContext) {
+            Disconnect-MgGraph -ErrorAction Stop | Out-Null
+            Write-WizardDebug "Disconnected existing Microsoft Graph session."
+        }
+    } catch {
+        Write-WizardDebug "Disconnect-MgGraph failed (ignored): $($_.Exception.Message)"
+    }
+}
+
+# A second, typed confirmation on top of the interactive sign-in itself: the
+# account picker in a browser sign-in flow is easy to click through on
+# autopilot, and this tool changes Intune config, so it asks the operator to
+# type the tenant back before touching anything. Skipped for unattended runs
+# (scheduled tasks, CI) since there is nobody to answer it - the tenant/account
+# is still logged prominently so it shows up in that run's own output.
+function Confirm-WizardTenant {
+    param([Parameter(Mandatory)]$Context)
+
+    if (-not (Test-WizardInteractive)) {
+        Write-Host "Connected to Microsoft Graph as $($Context.Account) (tenant $($Context.TenantId)). Running unattended, skipping tenant confirmation." -ForegroundColor DarkGray
+        return
+    }
+
+    # The account's UPN domain (e.g. 'contoso.onmicrosoft.com' or a verified
+    # custom domain) is a human-readable stand-in for the tenant - no extra
+    # Graph scope needed to look it up, unlike the tenant's display name.
+    $domain = ($Context.Account -split '@')[-1]
+    Write-Host ""
+    Write-Host "Connected to Microsoft Graph:" -ForegroundColor Yellow
+    Write-Host "  Account : $($Context.Account)"
+    Write-Host "  Tenant  : $($Context.TenantId)"
+    Write-Host ""
+    $typed = [string](Read-Host "Type the tenant domain ('$domain') to confirm this is the right tenant before anything is changed")
+    if ($typed -ne $domain) {
+        throw "Tenant confirmation did not match (expected '$domain', got '$typed'). Aborting before making any changes. If this is the wrong account, run Disconnect-MgGraph and re-run the wizard to sign in again."
+    }
+}
+
 # Signs the current PowerShell session in to Microsoft Graph, requesting only
 # the permission scopes this run actually needs.
 function Connect-WizardGraph {
@@ -35,18 +85,20 @@ function Connect-WizardGraph {
     # Combine the always-needed scopes with any extra ones, then drop duplicates.
     $scopes = @($script:RequiredScopes) + @($AdditionalScopes) | Select-Object -Unique
 
+    # Always start from a clean slate. Reusing an already-signed-in context
+    # (the previous behaviour) meant a session opened for one tenant earlier in
+    # the same shell would be used silently for this run too - exactly the
+    # wrong-tenant mistake this wizard cannot afford to make quietly. Forcing a
+    # fresh sign-in every time makes the account/tenant an explicit choice.
+    Disconnect-WizardGraph
+
     # try/catch runs the try block, and if anything inside throws an error, jumps
     # to catch instead of crashing the whole script.
     try {
-        # Get-MgContext returns details of an existing Graph sign-in, or nothing
-        # if there isn't one yet.
-        $context = Get-MgContext
-        if (-not $context -or ($scopes | Where-Object { $_ -notin $context.Scopes })) {
-            Write-WizardDebug "Connecting to Graph with scopes: $($scopes -join ', ')"
-            # Connect-MgGraph is the SDK cmdlet that opens the sign-in flow
-            # (browser or device code) and establishes the Graph session.
-            Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
-        }
+        Write-WizardDebug "Connecting to Graph with scopes: $($scopes -join ', ')"
+        # Connect-MgGraph is the SDK cmdlet that opens the sign-in flow
+        # (browser or device code) and establishes the Graph session.
+        Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
     } catch {
         # Sign-in covers a lot of distinct failures (cancelled browser prompt,
         # blocked device-code flow, conditional access, an admin who has not
@@ -70,6 +122,7 @@ function Connect-WizardGraph {
     }
 
     Write-WizardDebug "Graph context: tenant=$($context.TenantId) account=$($context.Account) type=$($context.AuthType)"
+    Confirm-WizardTenant -Context $context
 }
 
 function Resolve-WizardGroupName {

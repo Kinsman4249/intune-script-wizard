@@ -578,7 +578,9 @@ try {
     $exitCode = $script:WizardExitFatal
 } finally {
     # 'finally' always runs, whether the try block succeeded or threw, so the
-    # log file is always closed out cleanly.
+    # Graph session is never left open for a later, unrelated run to inherit,
+    # and the log file is always closed out cleanly.
+    Disconnect-WizardGraph
     Close-WizardLogging -ExitCode $exitCode
 }
 
