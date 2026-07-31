@@ -1,5 +1,13 @@
 # Change history
 
+### v1.9.2 (2026-07-31)
+
+Closed a coverage hole around exclusions given as a bare group GUID. `#group:<guid>` was tested; `#excludegroup:<guid>` was not, in either suite. The offline suite now covers a guid-only exclusion (passed to Graph verbatim, with the all-devices include still in place), a named include combined with a guid exclusion in one script, and the fact that a guid exclusion on its own does not pull in the `GroupMember.Read.All` scope - the guid the tests use is deliberately absent from the stub directory, so any attempt to look it up by name fails the run rather than passing quietly.
+
+Also covered the clash check that only fires after group resolution: `#group:"Pilot Ring"` plus `#excludegroup:<that group's guid>` are two different strings, so the parse-time overlap check cannot see them, and until now nothing exercised the guard that catches them once Graph has resolved both. No behaviour changed - both paths already worked - but neither was defended against a future edit.
+
+In the E2E kit, `groups.exclude.guid` no longer sits unused whenever `groups.exclude.displayName` is filled in. The display name previously won and the guid was ignored, so the generated set exercised the bare-guid exclusion only if the name was left blank. The two forms now generate separate tests, mirroring how the include role has always worked: `device/23-excludegroup-only.ps1` for the name and `device/23b-excludegroup-by-guid.ps1` for the guid. Filling in both also generates `expect-failure/device/group-ref-name-guid-clash.ps1`, so the post-resolution clash is checked against a real tenant too. Both `exclude` fields must name the same group for that to mean anything, which the metadata template now says.
+
 ### v1.9.1 (2026-07-31)
 
 Added retry with backoff for a throttled or unavailable tenant. Every Graph call now goes through `Invoke-WizardGraphRetry`: five attempts, backing off 2s/4s/8s/16s, honouring the service's own `Retry-After` when it sends one and capping any single wait at 120s so an unattended run cannot sit blocked indefinitely. Each wait is announced on the console, so a run that pauses says why it paused. Previously a single `429` - likely on a large tenant, or during a `-RestoreAll` over a folder of backups - failed that call outright and, for a deploy, that script with it.

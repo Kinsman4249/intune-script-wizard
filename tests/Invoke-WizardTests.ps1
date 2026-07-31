@@ -264,6 +264,10 @@ Check 'Missing -Path throws' ($out -match "does not exist or is not a folder") $
 $guid = '6f9a1c22-6b7e-4a11-9f3d-2c8e5b7a1d40'
 $helpdeskId = '11111111-2222-3333-4444-555555555555'
 $pilotId    = '99999999-8888-7777-6666-555555555555'
+# Deliberately absent from $directory below: an #excludegroup: carrying this
+# guid must be passed straight to Graph. If the wizard ever tried to look it up
+# by name the whole run would abort with 'No group found', failing these checks.
+$exclGuid   = '0a7c4d13-5e26-4f38-8b90-1d2e3f4a5b6c'
 $directory = @(
     @{ id = $helpdeskId; displayName = 'Helpdesk Laptops' }
     @{ id = $pilotId;    displayName = 'Pilot Ring' }
@@ -275,6 +279,8 @@ $ws = New-Workspace -Scripts @(
     @{ Rel = 'device/By-Name.ps1'; Body = "#group:`"Helpdesk Laptops`"`n#excludegroup:`"Pilot Ring`"`n$bodyA" }
     @{ Rel = 'device/By-Guid.ps1'; Body = "#group:$guid`n$bodyB" }
     @{ Rel = 'device/Excl-Only.ps1'; Body = "#excludegroup:`"Pilot Ring`"`nWrite-Host 'c'`n" }
+    @{ Rel = 'device/Excl-Guid.ps1'; Body = "#excludegroup:$exclGuid`nWrite-Host 'd'`n" }
+    @{ Rel = 'device/Mixed-Refs.ps1'; Body = "#group:`"Helpdesk Laptops`"`n#excludegroup:$exclGuid`nWrite-Host 'e'`n" }
 )
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 
@@ -307,6 +313,27 @@ Check 'Exclude-only keeps the all-devices include' (
     ($types -join ',') -eq '#microsoft.graph.allDevicesAssignmentTarget,#microsoft.graph.exclusionGroupAssignmentTarget'
 ) ($types -join ',')
 
+# Same shape as Excl-Only above, but the exclusion is a bare guid rather than a
+# display name: it must reach Graph verbatim, with the all-devices include intact.
+$exclGuidOnly = Get-TargetsFor $r.State 'Excl-Guid'
+$exclTarget = @($exclGuidOnly | Where-Object { $_['@odata.type'] -eq '#microsoft.graph.exclusionGroupAssignmentTarget' })
+$types = @($exclGuidOnly | ForEach-Object { $_['@odata.type'] }) | Sort-Object
+Check 'Bare GUID exclusion passed straight through' (
+    $exclTarget.Count -eq 1 -and $exclTarget[0]['groupId'] -eq $exclGuid
+) ($exclGuidOnly | ConvertTo-Json -Compress)
+Check 'GUID exclude-only keeps the all-devices include' (
+    ($types -join ',') -eq '#microsoft.graph.allDevicesAssignmentTarget,#microsoft.graph.exclusionGroupAssignmentTarget'
+) ($types -join ',')
+
+# A named include and a bare-guid exclude in one script: both reference forms
+# have to survive the same resolution pass.
+$mixed = Get-TargetsFor $r.State 'Mixed-Refs'
+Check 'Named include + GUID exclude both land' (
+    $mixed.Count -eq 2 -and
+    ($mixed | Where-Object { $_['@odata.type'] -eq '#microsoft.graph.groupAssignmentTarget' }).groupId -eq $helpdeskId -and
+    ($mixed | Where-Object { $_['@odata.type'] -eq '#microsoft.graph.exclusionGroupAssignmentTarget' }).groupId -eq $exclGuid
+) ($mixed | ConvertTo-Json -Compress)
+
 # --------------------------------------------------------------- Test 11
 # Unresolvable and ambiguous group names abort the whole run.
 foreach ($case in @(
@@ -333,6 +360,20 @@ $ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#group:`"Pilot
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 Check 'Same group included and excluded rejected' ($r.Output -match 'both #group: and #excludegroup:') $r.Output
 
+# The parse-time check above only catches refs that are the same string. A name
+# on one line and that same group's guid on the other are different strings, so
+# the clash only surfaces after resolution - and it must still abort the run.
+$ws = New-Workspace -Scripts @(
+    @{ Rel = 'device/Bad.ps1';  Body = "#group:`"Pilot Ring`"`n#excludegroup:$pilotId`n$bodyA" }
+    @{ Rel = 'device/Good.ps1'; Body = $bodyB }
+)
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
+$created = @($r.Calls | Where-Object { $_['call'] -eq 'New-MgBetaDeviceManagementScript' })
+Check 'Name-and-GUID for one group rejected after resolution' (
+    $r.Output -match 'resolves to both an include and an exclude target'
+) $r.Output
+Check 'Name-and-GUID clash deploys nothing' ($created.Count -eq 0) "got $($created.Count)"
+
 # --------------------------------------------------------------- Test 13
 # The directory-read scope is requested only when a name needs resolving.
 $ws = New-Workspace -Scripts @(@{ Rel = 'device/By-Guid.ps1'; Body = "#group:$guid`n$bodyA" })
@@ -342,9 +383,22 @@ Check 'GUID-only run does not request group scope' (
     $connect.Count -eq 0 -or -not (@($connect[0]['data']['scopes']) -contains 'GroupMember.Read.All')
 ) ($connect | ConvertTo-Json -Compress)
 
+# An exclusion is a group reference like any other: a bare guid there must not
+# drag the directory-read scope in either.
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Excl-Guid.ps1'; Body = "#excludegroup:$exclGuid`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
+$connect = @($r.Calls | Where-Object { $_['call'] -eq 'Connect-MgGraph' })
+Check 'GUID-only exclusion does not request group scope' (
+    $connect.Count -eq 0 -or -not (@($connect[0]['data']['scopes']) -contains 'GroupMember.Read.All')
+) ($connect | ConvertTo-Json -Compress)
+
 $ws = New-Workspace -Scripts @(@{ Rel = 'device/By-Name.ps1'; Body = "#group:`"Helpdesk Laptops`"`n$bodyA" })
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 Check 'Name-based run announces the extra scope' ($r.Output -match 'GroupMember\.Read\.All') $r.Output
+
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Excl-Name.ps1'; Body = "#excludegroup:`"Pilot Ring`"`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
+Check 'Name-based exclusion announces the extra scope' ($r.Output -match 'GroupMember\.Read\.All') $r.Output
 
 # --------------------------------------------------------------- Test 14
 # Switching an existing script from all-devices to a group replaces the set.

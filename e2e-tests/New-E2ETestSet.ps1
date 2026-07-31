@@ -270,16 +270,27 @@ if ((Test-HasValue $incName) -and (Test-HasValue $incSecName)) {
     $skipped.Add("device/22-group-multiple.ps1 - needs both groups.include.displayName and groups.includeSecondary.displayName")
 }
 
-if ((Test-HasValue $excName) -or (Test-HasValue $excGuid)) {
-    $excRef = if (Test-HasValue $excName) { "`"$excName`"" } else { $excGuid }
-    $excLabel = if (Test-HasValue $excName) { $excName } else { $excGuid }
+if (Test-HasValue $excName) {
     Add-E2ETest -Root 'main' -RelPath 'device/23-excludegroup-only.ps1' `
-        -Title '#excludegroup: alone (everyone except)' `
-        -Description "Carries only #excludegroup:$excRef, no #group:. Should mean 'all devices except this group'." `
-        -Expect "Assigned to all devices, with group '$excLabel' excluded." `
-        -Directives @("#excludegroup:$excRef")
+        -Title '#excludegroup: by display name, alone (everyone except)' `
+        -Description "Carries only #excludegroup:`"$excName`", no #group:. Should mean 'all devices except this group'." `
+        -Expect "Assigned to all devices, with group '$excName' excluded." `
+        -Directives @("#excludegroup:`"$excName`"")
 } else {
-    $skipped.Add("device/23-excludegroup-only.ps1 - groups.exclude.displayName and groups.exclude.guid are both blank")
+    $skipped.Add("device/23-excludegroup-only.ps1 - groups.exclude.displayName is blank in $MetadataPath")
+}
+
+# The guid form of an exclusion gets its own test rather than being shadowed by
+# the display name: it takes a different route in (no directory lookup, so no
+# GroupMember.Read.All), and only this test proves that route works for excludes.
+if (Test-HasValue $excGuid) {
+    Add-E2ETest -Root 'main' -RelPath 'device/23b-excludegroup-by-guid.ps1' `
+        -Title '#excludegroup: by guid, alone (everyone except)' `
+        -Description "Carries only #excludegroup:$excGuid (bare guid, no name lookup needed) and no #group:." `
+        -Expect "Assigned to all devices, with group guid $excGuid excluded." `
+        -Directives @("#excludegroup:$excGuid")
+} else {
+    $skipped.Add("device/23b-excludegroup-by-guid.ps1 - groups.exclude.guid is blank in $MetadataPath")
 }
 
 if ((Test-HasValue $incName) -and ((Test-HasValue $excName) -or (Test-HasValue $excGuid))) {
@@ -336,6 +347,20 @@ Add-E2ETest -Root 'expect-failure' -RelPath 'device/group-ref-overlap.ps1' `
     -Description "Lists the same group name in both a #group: and an #excludegroup: line, which is a contradiction." `
     -Expect "Run throws '... group(s) listed as both #group: and #excludegroup: ...' before creating anything." `
     -Directives @('#group:"E2E-Overlap-Test-Group"', '#excludegroup:"E2E-Overlap-Test-Group"')
+
+# Needs a real group under both of its names, so unlike the rest of this root it
+# is metadata-dependent. The overlap test above is caught while parsing, because
+# both lines carry the same string; a display name on one line and that same
+# group's guid on the other only collide once Graph has resolved them.
+if ((Test-HasValue $excName) -and (Test-HasValue $excGuid)) {
+    Add-E2ETest -Root 'expect-failure' -RelPath 'device/group-ref-name-guid-clash.ps1' `
+        -Title 'same group as #group: name and #excludegroup: guid' `
+        -Description "Includes group `"$excName`" by display name and excludes the same group by its guid ($excGuid). Different strings, one group." `
+        -Expect "Run throws '... resolves to both an include and an exclude target ...' during group resolution, before creating anything." `
+        -Directives @("#group:`"$excName`"", "#excludegroup:$excGuid")
+} else {
+    $skipped.Add("device/group-ref-name-guid-clash.ps1 - needs BOTH groups.exclude.displayName and groups.exclude.guid, naming the same group")
+}
 
 Add-E2ETest -Root 'expect-failure' -RelPath 'device/noassignments-plus-group.ps1' `
     -Title '#noassignments combined with #group:' `

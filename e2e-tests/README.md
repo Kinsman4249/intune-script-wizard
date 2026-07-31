@@ -94,7 +94,10 @@ stops. Edit that file:
 - `groups.*` - display name and/or GUID for up to three test groups
   (`include`, `includeSecondary`, `exclude`). Tests that need a group you
   haven't filled in are skipped and listed in `CHECKLIST.md` instead of
-  being generated with bad data.
+  being generated with bad data. For `include` and `exclude`, the two forms
+  are separate tests, not alternatives: a group referenced by GUID skips the
+  directory lookup entirely, so filling in both fields (same group each time)
+  is what covers both routes in and out.
 
 Re-run the generator once the metadata file is filled in. It writes three
 folders under `e2e-tests/generated/` (each its own `-Path` root) plus a

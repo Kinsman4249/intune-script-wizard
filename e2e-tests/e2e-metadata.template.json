@@ -8,7 +8,7 @@
     "include": {
       "displayName": "",
       "guid": "",
-      "notes": "Fill in displayName to generate device/20-group-by-name.ps1, guid to generate device/21-group-by-guid.ps1; fill in both to get both - this is the only role where the two forms produce separate tests. Everything else that needs an include group uses displayName only (device/22-group-multiple.ps1, 24-group-and-excludegroup.ps1, 25-kitchen-sink.ps1), so a guid on its own generates test 21 and nothing more. Leave both blank and every include test is skipped (noted in CHECKLIST.md)."
+      "notes": "Fill in displayName to generate device/20-group-by-name.ps1, guid to generate device/21-group-by-guid.ps1; fill in both to get both. Everything else that needs an include group uses displayName only (device/22-group-multiple.ps1, 24-group-and-excludegroup.ps1, 25-kitchen-sink.ps1), so a guid on its own generates test 21 and nothing more. Leave both blank and every include test is skipped (noted in CHECKLIST.md)."
     },
     "includeSecondary": {
       "displayName": "",
@@ -18,7 +18,7 @@
     "exclude": {
       "displayName": "",
       "guid": "",
-      "notes": "Used by the #excludegroup: tests: device/23-excludegroup-only.ps1 (everyone except this group), plus device/24-group-and-excludegroup.ps1 and device/25-kitchen-sink.ps1, which also need include.displayName. Only ONE form is ever generated - displayName wins and the guid is ignored if both are filled in, so fill in guid ALONE to exercise the bare-guid form. Leave both blank and all three tests are skipped (noted in CHECKLIST.md)."
+      "notes": "Both forms MUST name the same group - several tests rely on that. displayName generates device/23-excludegroup-only.ps1, guid generates device/23b-excludegroup-by-guid.ps1, and filling in both also generates expect-failure/device/group-ref-name-guid-clash.ps1, which checks that including by name and excluding by guid is caught as one group on both sides. device/24-group-and-excludegroup.ps1 and 25-kitchen-sink.ps1 additionally need include.displayName, and use the display name here when it is filled in, the guid otherwise. Leave both blank and every exclude test is skipped (noted in CHECKLIST.md)."
     }
   }
 }
