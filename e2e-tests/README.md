@@ -30,6 +30,7 @@ stubs cannot honestly stand in for.
 | Assignments, group resolution, `#group:`/`#excludegroup:`/`#noassignments` | Deploy `generated/main` + `Test-E2EDeployedSet.ps1` (real group ids, real targets) |
 | Meta-comment parsing, `#type:`/`#typeoverride:`, folder precedence | The full generate/deploy/verify cycle below |
 | Graph scopes, sign-in, consent | The full cycle - scope failures only surface against a real tenant |
+| Retry/throttling behaviour (`Invoke-WizardGraphRetry`) | Offline suite covers the logic; a real tenant only proves it against real `429`s, which cannot be provoked on demand |
 | Nothing tenant-facing (docs, logging, telemetry, error text) | Offline suite only |
 
 **Before every release**, run the full cycle once. The two self-checking scripts

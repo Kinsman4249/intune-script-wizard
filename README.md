@@ -308,6 +308,21 @@ avoids the window in which a script sits unassigned between a delete and a
 re-add. The call goes through `Invoke-MgGraphRequest` with a relative URI, so
 it follows the connected cloud (GCC High, DoD, 21Vianet) automatically.
 
+## Throttling and transient failures
+
+Every Graph call the wizard makes is retried when the tenant is throttling
+(`429`) or reports itself unavailable (`503`) - five attempts, backing off 2s,
+4s, 8s, 16s, and honouring the service's own `Retry-After` when it sends one
+(capped at 120s so an unattended run can't sit blocked indefinitely). Each wait
+is announced on the console, so a run that pauses says why.
+
+Only those two statuses are retried, because both mean the request was turned
+away **without being processed** - replaying it cannot create a second copy of
+anything. A `504` is deliberately not retried: a gateway timeout means the
+answer was lost, not the request, and re-sending a create after one is how a
+tenant ends up with two scripts. Everything else (a `400`, a `403`) fails
+immediately, since it would fail the same way however many times it was sent.
+
 ## Testing
 
 ```powershell
@@ -325,10 +340,21 @@ script not stopping the rest, `-StopOnError`, each exit code, a tenant that
 withholds a requested scope, corrupt backup files being rejected before any
 Graph call, and fatal errors reaching stderr.
 
+It also covers the restore edge cases specifically: a throttled tenant being
+waited out and then giving up, a transient failure not being mistaken for a
+deleted script, backups predating the current schema, colliding backup file
+names, `runAs32Bit` surviving a round trip, `-RestoreAll` picking the oldest
+backup per script, and a dead role scope tag falling back to the default
+instead of failing the restore.
+
 The stub for `Get-MgBetaDeviceManagementScript` returns `scriptContent` as a
 `byte[]`, the way the real SDK does rather than as the base64 text the service
 sends - handing back a string instead let two separate `byte[]`-handling bugs
-pass a green suite.
+pass a green suite. The stubs can also be told to throttle a given number of
+calls, reject a named role scope tag, or fail a read outright, which is how the
+retry and restore paths are driven without a tenant. Retries are real waits, so
+the suite sets `WIZARD_RETRY_BASE_SECONDS` to shrink the backoff base; nothing
+in normal use sets it.
 
 Against a real dev tenant, [e2e-tests/](e2e-tests) generates a set of scripts to
 deploy, plus two self-checking runs that Graph stubs can't stand in for:

@@ -1,5 +1,13 @@
 # Change history
 
+### v1.9.1 (2026-07-31)
+
+Added retry with backoff for a throttled or unavailable tenant. Every Graph call now goes through `Invoke-WizardGraphRetry`: five attempts, backing off 2s/4s/8s/16s, honouring the service's own `Retry-After` when it sends one and capping any single wait at 120s so an unattended run cannot sit blocked indefinitely. Each wait is announced on the console, so a run that pauses says why it paused. Previously a single `429` - likely on a large tenant, or during a `-RestoreAll` over a folder of backups - failed that call outright and, for a deploy, that script with it.
+
+Only `429` (throttled) and `503` (service unavailable) are retried, because both mean the request was turned away **without** being processed, so replaying it cannot create a second copy of anything. `504` is deliberately excluded: a gateway timeout means the answer was lost rather than the request, and re-sending a create after one is how a tenant ends up with two scripts. Anything else fails immediately, as it would fail the same way however many times it was sent.
+
+The offline stubs can now be told to throttle a given number of calls, so the retry path (waiting, succeeding, and giving up) is covered without a tenant. Retries are real waits, so the suite shrinks the backoff base through `WIZARD_RETRY_BASE_SECONDS`; nothing in normal use sets it.
+
 ### v1.9.0 (2026-07-31)
 
 Fixed a set of edge cases where a backup could not be restored, or restored something other than what it recorded.

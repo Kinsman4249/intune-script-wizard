@@ -81,6 +81,171 @@ function Get-WizardScriptContentBytes {
     return ,$bytes
 }
 
+# --- Throttling and transient failures ---------------------------------------
+#
+# Graph throttles. A tenant with a few hundred scripts, or a -RestoreAll over a
+# folder of backups, will meet a 429 sooner or later, and without a retry that
+# lands as a hard failure part-way through a run.
+#
+# Only 429 (throttled) and 503 (service unavailable) are retried, because both
+# mean the request was turned away WITHOUT being processed - so replaying it
+# cannot create a second copy of anything. A 504 is deliberately not retried:
+# a gateway timeout means the answer was lost, not that the request was, and
+# re-sending a create after one is how a tenant ends up with two scripts.
+$script:RetryStatusCodes = @(429, 503)
+
+# Total attempts, i.e. the first try plus four retries.
+$script:RetryMaxAttempts = 5
+
+# Each wait is doubled from this, and Retry-After overrides it when the service
+# says how long to wait. The environment variable exists so the offline test
+# suite can exercise the retry path without actually sleeping through it;
+# nothing in normal use sets it.
+$script:RetryBaseSeconds = if ($env:WIZARD_RETRY_BASE_SECONDS) { [double]$env:WIZARD_RETRY_BASE_SECONDS } else { 2 }
+
+# However long the service asks for, stop waiting at this. An unattended run
+# that sits blocked for an hour on one call is not better than one that fails.
+$script:RetryMaxDelaySeconds = 120
+
+function Read-WizardRetryAfterHeader {
+    # Pulls Retry-After out of one header collection, in whichever of the two
+    # shapes it arrives in: the typed RetryConditionHeaderValue that
+    # HttpResponseHeaders exposes, or a plain dictionary of raw strings.
+    # Returns $null when it isn't there. Never throws - a missing header just
+    # means falling back to the calculated delay.
+    param([Parameter(Mandatory)][AllowNull()]$Headers)
+
+    if ($null -eq $Headers) { return $null }
+    try {
+        $retryAfter = $Headers.PSObject.Properties['RetryAfter']
+        if ($retryAfter -and $retryAfter.Value) {
+            $delta = $retryAfter.Value.PSObject.Properties['Delta']
+            if ($delta -and $delta.Value) { return [double]$delta.Value.TotalSeconds }
+        }
+
+        $values = $null
+        if ($Headers -is [System.Collections.IDictionary]) {
+            foreach ($key in $Headers.Keys) {
+                # -ieq is an explicitly case-insensitive comparison; HTTP header
+                # names are case-insensitive and arrive spelled either way.
+                if ([string]$key -ieq 'Retry-After') { $values = $Headers[$key]; break }
+            }
+        } elseif ($Headers.PSObject.Methods['TryGetValues']) {
+            $out = $null
+            if ($Headers.TryGetValues('Retry-After', [ref]$out)) { $values = $out }
+        }
+
+        if ($values) {
+            $seconds = 0.0
+            if ([double]::TryParse([string](@($values)[0]), [ref]$seconds)) { return $seconds }
+        }
+    } catch {
+        # Any surprise in the header shape falls through to the calculated
+        # backoff, which is always a safe answer.
+    }
+    return $null
+}
+
+function Get-WizardRetryAfterSeconds {
+    # Walks a caught failure looking for the service's own Retry-After.
+    param([Parameter(Mandatory)][AllowNull()]$ErrorRecord)
+
+    if (-not $ErrorRecord) { return $null }
+    $exception = $ErrorRecord.Exception
+    $depth = 0
+    while ($exception -and $depth -lt 5) {
+        foreach ($name in @('ResponseHeaders', 'Headers')) {
+            $property = $exception.PSObject.Properties[$name]
+            if ($property -and $property.Value) {
+                $seconds = Read-WizardRetryAfterHeader -Headers $property.Value
+                if ($null -ne $seconds) { return $seconds }
+            }
+        }
+        $response = $exception.PSObject.Properties['Response']
+        if ($response -and $response.Value) {
+            $headers = $response.Value.PSObject.Properties['Headers']
+            if ($headers -and $headers.Value) {
+                $seconds = Read-WizardRetryAfterHeader -Headers $headers.Value
+                if ($null -ne $seconds) { return $seconds }
+            }
+        }
+        $exception = $exception.InnerException
+        $depth++
+    }
+    return $null
+}
+
+function Test-WizardRetryableFailure {
+    # True when a failure is worth trying again: throttling, or the service
+    # saying it is unavailable. Anything the status can be read from and isn't
+    # one of those is answered NO immediately - a 400 or a 403 will fail the
+    # same way however many times it is sent.
+    param([Parameter(Mandatory)][AllowNull()]$ErrorRecord)
+
+    if (-not $ErrorRecord) { return $false }
+
+    $status = Get-WizardGraphStatusCode -ErrorRecord $ErrorRecord
+    if ($null -ne $status) { return ($status -in $script:RetryStatusCodes) }
+
+    # No status to read, so match the text narrowly. As with the not-found
+    # check, the default when this cannot be answered is "no", because retrying
+    # a request that was actually rejected just delays a failure.
+    $text = "$($ErrorRecord.Exception.Message) $($ErrorRecord.ErrorDetails.Message)"
+    return ($text -match '(?i)(^|\W)(429|503)(\W|$)|too\s*many\s*requests|service\s*unavailable|throttl')
+}
+
+function Get-WizardRetryDelaySeconds {
+    # How long to wait before attempt N+1. The service's own Retry-After wins
+    # when it sent one; otherwise back off exponentially from the base.
+    param(
+        [Parameter(Mandatory)][AllowNull()]$ErrorRecord,
+        [Parameter(Mandatory)][int]$Attempt
+    )
+
+    $delay = Get-WizardRetryAfterSeconds -ErrorRecord $ErrorRecord
+    if ($null -eq $delay -or $delay -le 0) {
+        # 2s, 4s, 8s, 16s with the default base. [Math]::Pow is exponentiation.
+        $delay = $script:RetryBaseSeconds * [Math]::Pow(2, $Attempt - 1)
+    }
+    if ($delay -gt $script:RetryMaxDelaySeconds) { $delay = $script:RetryMaxDelaySeconds }
+    return $delay
+}
+
+function Invoke-WizardGraphRetry {
+    # Runs one Graph call, retrying it while the tenant is throttling or
+    # unavailable. Everything that talks to Graph goes through here.
+    param(
+        # The call itself, as a scriptblock: '& $Call' runs it, and its result
+        # is handed straight back to this function's caller.
+        [Parameter(Mandatory)][scriptblock]$Call,
+        # Named in the "retrying" message, e.g. "Reading script abc123".
+        [Parameter(Mandatory)][string]$What
+    )
+
+    $attempt = 1
+    while ($true) {
+        try {
+            return (& $Call)
+        } catch {
+            # Out of attempts, or not the kind of failure that waiting fixes:
+            # let the caller's own error handling describe it.
+            if ($attempt -ge $script:RetryMaxAttempts -or -not (Test-WizardRetryableFailure -ErrorRecord $_)) {
+                if ($attempt -gt 1) {
+                    Write-WizardDebug "$What still failing after $attempt attempt(s); giving up."
+                }
+                throw
+            }
+
+            $delay = Get-WizardRetryDelaySeconds -ErrorRecord $_ -Attempt $attempt
+            # Written to the host, not just the log: an operator watching a run
+            # pause for half a minute deserves to know why it is paused.
+            Write-Warning "$What was throttled or unavailable ($(Get-WizardErrorSummary -ErrorRecord $_)). Waiting $([Math]::Round($delay, 1))s and retrying (attempt $($attempt + 1) of $script:RetryMaxAttempts)."
+            Start-Sleep -Milliseconds ([int]($delay * 1000))
+            $attempt++
+        }
+    }
+}
+
 # Drops any Graph session already active in this process. Called both before
 # connecting (a session left over from an earlier run, or from a Connect-MgGraph
 # the operator ran by hand for a different tenant earlier in the same shell,
@@ -208,7 +373,9 @@ function Resolve-WizardGroupName {
         # directly with whatever URI/method you give it, rather than going
         # through a typed cmdlet. -OutputType Hashtable gets back plain
         # key/value data instead of a strongly-typed .NET object.
-        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+        $response = Invoke-WizardGraphRetry -What "Looking up group '$Name'" -Call {
+            Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+        }
     } catch {
         throw "Could not look up group '$Name' in Entra ID: $(Get-WizardErrorSummary -ErrorRecord $_). This needs the $script:GroupReadScope scope; if consent was declined, use the group's object GUID in #group: instead."
     }
@@ -317,7 +484,9 @@ function Get-WizardExistingScripts {
         # knows the deviceManagementScript shape and returns .NET objects.
         # -All follows pagination automatically; -Property limits which fields
         # come back, so full script content isn't downloaded for every item.
-        $existing = Get-MgBetaDeviceManagementScript -All -Property id, displayName, description, lastModifiedDateTime
+        $existing = Invoke-WizardGraphRetry -What 'Reading the existing scripts' -Call {
+            Get-MgBetaDeviceManagementScript -All -Property id, displayName, description, lastModifiedDateTime
+        }
     } catch {
         throw "Could not read the existing scripts from Intune: $(Get-WizardErrorSummary -ErrorRecord $_). Without that list the wizard cannot tell a new script from an existing one, so it will not deploy anything."
     }
@@ -342,7 +511,9 @@ function Get-WizardExistingScripts {
             $hash = $null
             try {
                 Write-WizardDebug "  downloading content for $($item.Id) '$($item.DisplayName)'"
-                $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
+                $full = Invoke-WizardGraphRetry -What "Reading the content of '$($item.DisplayName)'" -Call {
+                    Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
+                }
                 # See Get-WizardScriptContentBytes for why this cannot just
                 # base64-decode the property directly.
                 $bytes = Get-WizardScriptContentBytes -Content $full.ScriptContent
@@ -392,7 +563,9 @@ function Get-WizardScriptAssignments {
     while ($uri -and $page -lt 100) {
         Write-WizardDebug "GET $uri"
         try {
-            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+            $response = Invoke-WizardGraphRetry -What "Reading the assignments of script $Id" -Call {
+                Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+            }
         } catch {
             throw "Could not read the assignments of script $Id : $(Get-WizardErrorSummary -ErrorRecord $_)"
         }
@@ -450,7 +623,9 @@ function Set-WizardWholeAssignment {
     try {
         # POST sends data to the server (as opposed to GET, which only reads).
         # Out-Null discards the response since nothing here needs it.
-        Invoke-MgGraphRequest -Method POST -Uri $uri -Body $json -ContentType 'application/json' | Out-Null
+        Invoke-WizardGraphRetry -What "Assigning script $Id" -Call {
+            Invoke-MgGraphRequest -Method POST -Uri $uri -Body $json -ContentType 'application/json' | Out-Null
+        }
     } catch {
         # A 400 here is almost always a group id the tenant does not recognise,
         # which the pre-flight cannot catch for GUIDs supplied directly.
@@ -566,7 +741,8 @@ function New-WizardScript {
     try {
         # -ScriptContentInputFile lets the cmdlet read and base64-encode the
         # script file itself, so this code never has to do that by hand.
-        $script = New-MgBetaDeviceManagementScript `
+        $script = Invoke-WizardGraphRetry -What "Creating '$($Meta.DisplayName)'" -Call {
+            New-MgBetaDeviceManagementScript `
             -DisplayName $Meta.DisplayName `
             -Description $Meta.Description `
             -FileName $Meta.FileName `
@@ -574,6 +750,7 @@ function New-WizardScript {
             -RunAsAccount $Meta.RunAsAccount `
             -EnforceSignatureCheck:$Meta.EnforceSignatureCheck `
             -RunAs32Bit:$Meta.RunAs32Bit
+        }
     } catch {
         throw "Creating '$($Meta.DisplayName)' failed: $(Get-WizardErrorSummary -ErrorRecord $_)"
     }
@@ -620,7 +797,8 @@ function Update-WizardScript {
     $restoreHint = "Restore the previous state with: -Restore '$backupPath'"
 
     try {
-        Update-MgBetaDeviceManagementScript `
+        Invoke-WizardGraphRetry -What "Updating '$($Meta.DisplayName)'" -Call {
+            Update-MgBetaDeviceManagementScript `
             -DeviceManagementScriptId $ExistingId `
             -DisplayName $Meta.DisplayName `
             -Description $Meta.Description `
@@ -629,6 +807,7 @@ function Update-WizardScript {
             -RunAsAccount $Meta.RunAsAccount `
             -EnforceSignatureCheck:$Meta.EnforceSignatureCheck `
             -RunAs32Bit:$Meta.RunAs32Bit | Out-Null
+        }
     } catch {
         throw "Updating '$($Meta.DisplayName)' ($ExistingId) failed: $(Get-WizardErrorSummary -ErrorRecord $_). $restoreHint"
     }
@@ -649,7 +828,9 @@ function Remove-WizardScript {
 
     Write-WizardDebug "Deleting $Id"
     try {
-        Remove-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+        Invoke-WizardGraphRetry -What "Deleting script $Id" -Call {
+            Remove-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+        }
     } catch {
         throw "Could not delete script $Id : $(Get-WizardErrorSummary -ErrorRecord $_)"
     }

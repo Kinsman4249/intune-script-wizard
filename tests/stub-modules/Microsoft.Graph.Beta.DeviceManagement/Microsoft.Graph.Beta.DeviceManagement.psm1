@@ -8,6 +8,25 @@ function Add-StubCall2 {
         Add-Content -LiteralPath $env:WIZTEST_CALLS
 }
 
+function Test-StubThrottle2 {
+    # 'throttle' = @{ calls = 2 } makes the next 2 calls fail the way a
+    # throttled tenant does, before any real work happens, so the retry path
+    # can be driven offline. The counter lives in the state file, so it counts
+    # down across the separate processes a single test run spawns. Add
+    # 'operation' ('get', 'update', 'create') to throttle just one of them.
+    param($State, [string]$Operation)
+
+    $throttle = $State['throttle']
+    if (-not $throttle) { return $false }
+    if ($throttle['operation'] -and $throttle['operation'] -ne $Operation) { return $false }
+
+    $remaining = [int]$throttle['calls']
+    if ($remaining -le 0) { return $false }
+    $throttle['calls'] = $remaining - 1
+    Set-StubState2 $State
+    return $true
+}
+
 function Deny-StubScopeTag2 {
     # 'rejectScopeTag' names a scope tag id the fake tenant refuses, the way a
     # real one refuses a tag that has been deleted since the backup was taken.
@@ -54,6 +73,9 @@ function Get-MgBetaDeviceManagementScript {
         [string[]]$Property
     )
     $state = Get-StubState2
+    if (Test-StubThrottle2 -State $state -Operation 'get') {
+        throw 'Response status code does not indicate success: 429 (Too Many Requests).'
+    }
     if ($DeviceManagementScriptId) {
         # 'getError' makes a single-script read fail the way a throttle or an
         # outage does, as opposed to the "not found" below. The two must not be
@@ -85,6 +107,9 @@ function New-MgBetaDeviceManagementScript {
         throw "Stub: tenant rejected '$DisplayName' (BadRequest)"
     }
     Deny-StubScopeTag2 -State $state -RoleScopeTagIds $RoleScopeTagIds
+    if (Test-StubThrottle2 -State $state -Operation 'create') {
+        throw 'Response status code does not indicate success: 429 (Too Many Requests).'
+    }
     $id = "new-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     $bytes = [System.IO.File]::ReadAllBytes($ScriptContentInputFile)
     $state['scripts'] += @{
@@ -112,6 +137,9 @@ function Update-MgBetaDeviceManagementScript {
     }
     $state = Get-StubState2
     Deny-StubScopeTag2 -State $state -RoleScopeTagIds $RoleScopeTagIds
+    if (Test-StubThrottle2 -State $state -Operation 'update') {
+        throw 'Response status code does not indicate success: 429 (Too Many Requests).'
+    }
     foreach ($s in $state['scripts']) {
         if ($s['id'] -ne $DeviceManagementScriptId) { continue }
         $s['displayName'] = $DisplayName

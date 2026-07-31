@@ -48,7 +48,9 @@ function Backup-WizardScript {
     }
 
     try {
-        $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+        $full = Invoke-WizardGraphRetry -What "Reading script $Id to back it up" -Call {
+            Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $Id
+        }
     } catch {
         throw "Could not read script $Id to back it up: $(Get-WizardErrorSummary -ErrorRecord $_)"
     }
@@ -251,8 +253,9 @@ function Remove-WizardOrphanReplacement {
     }
 
     try {
-        $candidates = @(Get-MgBetaDeviceManagementScript -All -Property id, displayName |
-            Where-Object { $_.Id -ne $RecreatedId -and $_.DisplayName -eq $name })
+        $candidates = @(Invoke-WizardGraphRetry -What 'Checking for an orphaned duplicate' -Call {
+            Get-MgBetaDeviceManagementScript -All -Property id, displayName
+        } | Where-Object { $_.Id -ne $RecreatedId -and $_.DisplayName -eq $name })
     } catch {
         Write-Warning "Could not check the tenant for an orphaned duplicate of '$name': $(Get-WizardErrorSummary -ErrorRecord $_). Check the Intune portal by hand if you expect one."
         return
@@ -264,7 +267,9 @@ function Remove-WizardOrphanReplacement {
     $matches = @()
     foreach ($candidate in $candidates) {
         try {
-            $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $candidate.Id -Property scriptContent
+            $full = Invoke-WizardGraphRetry -What "Reading candidate $($candidate.Id)" -Call {
+                Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $candidate.Id -Property scriptContent
+            }
             $candidateBytes = Get-WizardScriptContentBytes -Content $full.ScriptContent
             if (-not $candidateBytes) { continue }
             $candidateHash = Get-WizardBytesHash -Bytes $candidateBytes
@@ -391,7 +396,9 @@ function Restore-WizardBackup {
         # still live - two copies in the tenant, the assignments moved to the
         # copy, and the backup filed away as though it had all worked.
         try {
-            $exists = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id']
+            $exists = Invoke-WizardGraphRetry -What "Checking whether script $($backup['Id']) still exists" -Call {
+                Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id']
+            }
         } catch {
             if (-not (Test-WizardGraphNotFound -ErrorRecord $_)) {
                 throw "Could not check whether script $($backup['Id']) still exists: $(Get-WizardErrorSummary -ErrorRecord $_). Nothing was changed and '$BackupFile' is untouched, so this can be retried once the tenant is answering again."
@@ -415,6 +422,7 @@ function Restore-WizardBackup {
                 Invoke-WizardScopeTagFallback -RoleScopeTagIds $roleScopeTagIds `
                     -What "Restoring '$($backup['DisplayName'])'" -Write {
                         param([string[]]$Tags)
+                        Invoke-WizardGraphRetry -What "Restoring over script $($backup['Id'])" -Call {
                         Update-MgBetaDeviceManagementScript `
                             -DeviceManagementScriptId $backup['Id'] `
                             -DisplayName $backup['DisplayName'] `
@@ -425,6 +433,7 @@ function Restore-WizardBackup {
                             -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
                             -RunAs32Bit:$backup['RunAs32Bit'] `
                             -RoleScopeTagIds $Tags | Out-Null
+                        }
                     }
             } catch {
                 throw "Restoring '$($backup['DisplayName'])' over $($backup['Id']) failed: $(Get-WizardErrorSummary -ErrorRecord $_). The script is unchanged or partly changed; the backup file is intact and can be retried."
@@ -436,6 +445,7 @@ function Restore-WizardBackup {
                 $created = Invoke-WizardScopeTagFallback -RoleScopeTagIds $roleScopeTagIds `
                     -What "Recreating '$($backup['DisplayName'])'" -Write {
                         param([string[]]$Tags)
+                        Invoke-WizardGraphRetry -What "Recreating '$($backup['DisplayName'])'" -Call {
                         New-MgBetaDeviceManagementScript `
                             -DisplayName $backup['DisplayName'] `
                             -Description $backup['Description'] `
@@ -445,6 +455,7 @@ function Restore-WizardBackup {
                             -EnforceSignatureCheck:$backup['EnforceSignatureCheck'] `
                             -RunAs32Bit:$backup['RunAs32Bit'] `
                             -RoleScopeTagIds $Tags
+                        }
                     }
             } catch {
                 throw "Recreating '$($backup['DisplayName'])' from the backup failed: $(Get-WizardErrorSummary -ErrorRecord $_)"
