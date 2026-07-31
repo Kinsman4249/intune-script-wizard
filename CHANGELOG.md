@@ -1,5 +1,9 @@
 # Change history
 
+### v1.8.3 (2026-07-31)
+
+Fixed `Get-WizardExistingScripts` warning "Could not hash existing script ... input is not a valid Base-64 string" for every script in a tenant. `Get-MgBetaDeviceManagementScript`'s `ScriptContent` property deserialises `scriptContent` straight to a `byte[]`, not the base64 string the wire format uses; passing that array to `[Convert]::FromBase64String` silently coerced it into a bogus space-separated string of numbers first. The existing-script hash now uses the bytes directly when the SDK already returned a `byte[]`, and only base64-decodes when it returned a string.
+
 ### v1.8.2 (2026-07-31)
 
 Fixed sign-in requesting only `DeviceManagementConfiguration.ReadWrite.All`, which is not sufficient to read or write Intune device management scripts. `Connect-WizardGraph` now also requests `DeviceManagementScripts.ReadWrite.All`, so reading existing scripts no longer fails with a 403 asking for `DeviceManagementScripts.Read.All`/`ReadWrite.All`.

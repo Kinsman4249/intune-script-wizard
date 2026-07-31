@@ -282,15 +282,20 @@ function Get-WizardExistingScripts {
             $hash = $null
             try {
                 Write-WizardDebug "  downloading content for $($item.Id) '$($item.DisplayName)'"
-                # This time asking specifically for scriptContent, which Graph
-                # stores as a base64-encoded string (text-safe encoding of the
-                # raw script bytes) - it has to be decoded back to bytes before
-                # it can be hashed or compared to a local file.
+                # scriptContent is an Edm.Binary on the wire (a base64-encoded
+                # string), but the SDK model deserialises it straight to a
+                # byte[] rather than leaving it as the base64 text. Passing a
+                # byte[] to FromBase64String(string) doesn't throw a type
+                # error - PowerShell coerces it into a space-separated string
+                # of numbers first, which then fails to parse as base64. Only
+                # base64-decode when the SDK actually handed back a string.
                 $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
-                if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) {
+                $content = $full.ScriptContent
+                if ($null -eq $content -or ($content -is [string] -and [string]::IsNullOrWhiteSpace($content))) {
                     throw "the tenant returned no script content"
                 }
-                $hash = Get-WizardBytesHash -Bytes ([System.Convert]::FromBase64String($full.ScriptContent))
+                $bytes = if ($content -is [byte[]]) { $content } else { [System.Convert]::FromBase64String($content) }
+                $hash = Get-WizardBytesHash -Bytes $bytes
             } catch {
                 Write-Warning "Could not hash existing script '$($item.DisplayName)' ($($item.Id)): $(Get-WizardErrorSummary -ErrorRecord $_). It will not be matched by content this run."
                 Write-WizardDebug (Get-WizardErrorDetail -ErrorRecord $_)
