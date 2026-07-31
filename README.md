@@ -1,5 +1,3 @@
-TODO: disconnect mg graph whether script exits gracefully or not
-
 # intune-script-wizard
 
 Deploys PowerShell platform scripts to Microsoft Intune from local `user/` and
@@ -35,6 +33,7 @@ effect on the endpoint.
 | `#scriptname:"Override Name"` | Display name in Intune (default: filename minus `.ps1`) |
 | `#startdesc` ... `#enddesc` | Lines between these become the description (default: blank) |
 | `#type:user` or `#type:device` | Required only for scripts not under a `user/`/`device/` folder |
+| `#typeoverride:yes` | Let this script's `#type:` win over the `user/`/`device/` folder it sits in |
 | `#noassignments` (or `#noassigments`) | Do not assign this script to anyone |
 | `#group:"Name"` or `#group:<guid>` | Assign to this group instead of all users/devices. Repeatable |
 | `#excludegroup:"Name"` or `#excludegroup:<guid>` | Exclude this group from the assignment. Repeatable |
@@ -43,6 +42,12 @@ effect on the endpoint.
 
 See [examples/user/Example-UserScript.ps1](examples/user/Example-UserScript.ps1)
 and [examples/device/Example-DeviceScript.ps1](examples/device/Example-DeviceScript.ps1).
+
+If a script sits under `user/` or `device/` and *also* carries a conflicting
+`#type:`, the folder wins - a script's location is the more visible of the two,
+so it's the one that decides. Add `#typeoverride:yes` to that script to let its
+`#type:` win instead, or pass `-AllowTypeOverride` to grant that for every
+script in the run.
 
 ### Targeting specific groups
 
@@ -70,8 +75,8 @@ Notes:
 - A value that parses as a GUID is used as-is. Anything else is treated as a
   display name and resolved against Entra ID, which needs the
   `GroupMember.Read.All` scope. That scope is **only** requested when at least
-  one script actually names a group, so GUID-only setups keep the consent
-  footprint they have today.
+  one script actually names a group, so a GUID-only setup never asks for a
+  directory read at all.
 - Resolution happens as a pre-flight over every script, before anything is
   created or updated. A name that matches no group, or more than one, aborts
   the whole run rather than leaving it half applied. Duplicate group names are
@@ -125,7 +130,27 @@ since the backup was taken). Assignment targets are snapshotted as the raw
 Graph payload, so group targets keep their `groupId` and any assignment filter
 id through a round trip.
 
-List available backups with `./Deploy-IntuneScripts.ps1 -ListBackups`.
+Backups live in `backups/` under `-Path`. Any run that updated something prints
+that folder at the end, so you don't have to remember where it is. List them
+with `./Deploy-IntuneScripts.ps1 -ListBackups`.
+
+A restored backup is moved into `backups/backup-restored/` afterwards, so what's
+left in `backups/` is only what you haven't used yet.
+
+To roll back a whole run rather than one script, point `-Restore` at the folder
+and add `-RestoreAll`:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -Restore ./backups -RestoreAll
+```
+
+That restores every `*.json` directly inside the folder (not recursive, and
+already-restored ones under `backup-restored/` are skipped). Each is restored
+independently, so one failure doesn't stop the rest - the summary at the end
+lists what did and didn't make it, and the run exits `2` if any failed.
+`-Restore` can't be combined with `-DryRun`: a restore has nothing to preview,
+and running it anyway would change the tenant for someone who asked for no
+changes.
 
 ## Prerequisites
 
@@ -139,6 +164,37 @@ The script installs only the two modules it actually needs -
 never the full `Microsoft.Graph` meta-module, which pulls in every Graph
 service and is several GB. You'll be prompted before anything is installed
 unless you pass `-AcceptModuleInstall`.
+
+### Signing in
+
+Every run signs in fresh. Any Graph session already open in the PowerShell
+session - one left over from an earlier run, or a `Connect-MgGraph` you ran by
+hand - is disconnected first, so a session opened against one tenant can never
+be silently reused for another. The wizard also disconnects when it finishes,
+whether the run succeeded or failed.
+
+Interactive runs then have to type back the signed-in account's domain before
+anything is created, updated, or restored:
+
+```
+Connected to Microsoft Graph:
+  Account : admin@contoso.onmicrosoft.com
+  Tenant  : 8f4c...
+
+Type the tenant domain ('contoso.onmicrosoft.com') to confirm this is the right
+tenant before anything is changed:
+```
+
+The browser account picker is easy to click through on autopilot, and this tool
+changes live Intune config, so the tenant has to be confirmed rather than
+assumed. Unattended runs (scheduled tasks, CI) skip the prompt since nobody is
+there to answer it, but still log the account and tenant.
+
+Scopes are requested per run: `DeviceManagementConfiguration.ReadWrite.All` and
+`DeviceManagementScripts.ReadWrite.All` always, plus `GroupMember.Read.All` only
+when a script names a group by display name. If the tenant grants fewer scopes
+than were asked for, the run stops right there with the missing ones named,
+rather than failing later on a confusing `403`.
 
 ## Usage
 
@@ -157,7 +213,25 @@ unless you pass `-AcceptModuleInstall`.
 
 # Stop at the first script that fails instead of working through the rest:
 ./Deploy-IntuneScripts.ps1 -StopOnError
+
+# Let every script's #type: comment win over the folder it sits in:
+./Deploy-IntuneScripts.ps1 -AllowTypeOverride
+
+# Resolve near-duplicates without prompting (for scheduled/unattended runs):
+./Deploy-IntuneScripts.ps1 -OnFuzzyMatch Skip
 ```
+
+| Flag | Effect |
+| --- | --- |
+| `-Path <dir>` | Folder to scan (default: current directory) |
+| `-DryRun` | Print what would happen; makes no changes |
+| `-OnFuzzyMatch Skip\|Replace\|SideBySide` | Resolve near-duplicates without prompting |
+| `-AllowTypeOverride` | Let `#type:` beat the `user/`/`device/` folder, run-wide |
+| `-StopOnError` | Abandon the run at the first failure |
+| `-AcceptModuleInstall` | Install missing Graph modules without prompting |
+| `-Restore <file>` | Restore one backup (add `-RestoreAll` for a whole folder) |
+| `-ListBackups` | List available backups and exit |
+| `-DebugLog None\|Console\|File\|Both` | Trace Graph URLs, bodies and match scores |
 
 ### When something fails
 
@@ -227,6 +301,35 @@ and `-Path` validation. It also covers the failure paths: a single failing
 script not stopping the rest, `-StopOnError`, each exit code, a tenant that
 withholds a requested scope, corrupt backup files being rejected before any
 Graph call, and fatal errors reaching stderr.
+
+The stub for `Get-MgBetaDeviceManagementScript` returns `scriptContent` as a
+`byte[]`, the way the real SDK does rather than as the base64 text the service
+sends - handing back a string instead let two separate `byte[]`-handling bugs
+pass a green suite.
+
+Against a real dev tenant, [e2e-tests/](e2e-tests) generates a set of scripts to
+deploy, plus two self-checking runs that Graph stubs can't stand in for:
+
+```powershell
+# After deploying a generated root: is everything really in the tenant, intact?
+pwsh e2e-tests/Test-E2EDeployedSet.ps1 -Path e2e-tests/generated/main
+
+# Can a backup actually be restored?
+pwsh e2e-tests/Test-E2EBackupRestore.ps1
+```
+
+The first re-reads every deployed script out of Intune and checks the uploaded
+content is **byte identical** to the local file (SHA256 both sides, so a BOM,
+a CRLF/LF flip or a lost trailing newline fails it), that run-as, signature
+check, 32/64-bit, filename and description match the meta comments, and that the
+assignment set matches target for target. It's read-only.
+
+The second covers the update -> backup -> restore path nothing else exercises:
+it deploys a throwaway script, updates it to force a backup, verifies the backup
+file is well-formed base64 rather than a JSON array of numbers, restores it, and
+confirms the tenant holds the original bytes again. It cleans up after itself.
+
+Both exit non-zero if any check failed.
 
 After any change, still confirm against a non-production tenant with `-DryRun`
 first, then for real, checking in the Intune portal (Devices > Scripts) that

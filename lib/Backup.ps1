@@ -37,7 +37,14 @@ function Backup-WizardScript {
     if (-not $full -or -not $full.Id) {
         throw "Script $Id could not be backed up: the tenant returned nothing for it. It may have been deleted since the run started."
     }
-    if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) {
+    # Via the shared helper, because the SDK returns this as a byte[] rather
+    # than the base64 text the backup file stores. Checking it with
+    # IsNullOrWhiteSpace and writing it through unconverted (what this used to
+    # do) wrote a JSON array of numbers into the backup, which then failed to
+    # base64-decode on the way back in - an unrestorable backup that only
+    # announced itself at restore time.
+    $contentBytes = Get-WizardScriptContentBytes -Content $full.ScriptContent
+    if (-not $contentBytes) {
         throw "Script $Id ('$($full.DisplayName)') came back without any content, so a backup of it would be unrestorable. Refusing to change it."
     }
 
@@ -57,7 +64,7 @@ function Backup-WizardScript {
         DisplayName            = $full.DisplayName
         Description            = $full.Description
         FileName               = $full.FileName
-        ScriptContent          = $full.ScriptContent
+        ScriptContent          = [System.Convert]::ToBase64String($contentBytes)
         RunAsAccount           = $full.RunAsAccount.ToString()
         EnforceSignatureCheck  = [bool]$full.EnforceSignatureCheck
         RunAs32Bit             = [bool]$full.RunAs32BitOnWindows64
@@ -167,15 +174,21 @@ function Test-WizardBackupShape {
     try {
         # Intune stores script content as base64 text; decode it back to raw
         # bytes here just to prove it is valid and non-empty, not to use yet.
-        $bytes = [System.Convert]::FromBase64String($Backup['ScriptContent'])
+        # Shared with the Graph read path so that a backup written before the
+        # byte[] handling was fixed - content stored as a JSON array of numbers
+        # instead of base64 - still restores instead of being rejected.
+        $bytes = Get-WizardScriptContentBytes -Content $Backup['ScriptContent']
     } catch {
         throw "'$Source' has a ScriptContent field that is not valid base64, so the original script cannot be reconstructed from it."
     }
-    if ($bytes.Length -eq 0) {
+    if (-not $bytes) {
         throw "'$Source' decodes to an empty script. Intune rejects empty script content, so there is nothing to restore."
     }
 
-    return $bytes
+    # Unary comma: without it a returned array is enumerated onto the pipeline
+    # and a one-byte script collapses to a single [byte], which the caller's
+    # WriteAllBytes(string, byte[]) then has no overload for.
+    return ,$bytes
 }
 
 function Remove-WizardOrphanReplacement {
@@ -214,8 +227,9 @@ function Remove-WizardOrphanReplacement {
     foreach ($candidate in $candidates) {
         try {
             $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $candidate.Id -Property scriptContent
-            if ([string]::IsNullOrWhiteSpace($full.ScriptContent)) { continue }
-            $candidateHash = Get-WizardBytesHash -Bytes ([System.Convert]::FromBase64String($full.ScriptContent))
+            $candidateBytes = Get-WizardScriptContentBytes -Content $full.ScriptContent
+            if (-not $candidateBytes) { continue }
+            $candidateHash = Get-WizardBytesHash -Bytes $candidateBytes
             if ($candidateHash -eq $hash) { $matches += $candidate }
         } catch {
             Write-WizardDebug "Could not hash candidate $($candidate.Id) while checking for an orphaned duplicate: $($_.Exception.Message)"

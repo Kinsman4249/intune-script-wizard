@@ -1,5 +1,20 @@
 # Change history
 
+### v1.8.5 (2026-07-31)
+
+Fixed backups being written unrestorable. `Backup-WizardScript` wrote the SDK's `ScriptContent` straight into the backup file, but the SDK returns that as a `byte[]` rather than the base64 text the backup format expects, so the file stored a JSON array of numbers that failed to decode on the way back in - a backup that looked successful and only revealed itself at restore time. The same `byte[]` mishandling also silently disabled the orphaned-duplicate check during a recreate-restore. All three read sites (content hashing, backup, orphan check) now share one `Get-WizardScriptContentBytes` helper, which also recovers backups already written in the broken array form, so existing backup files restore without hand-repair.
+
+The offline test stubs now model `scriptContent` as the `byte[]` the real SDK returns instead of a base64 string - the gap that let both of these bugs pass a green suite - plus a new assertion that a backup stores base64 text that decodes to the original script.
+
+Added two self-checking E2E runs against a dev tenant, replacing checks that were previously eyeball-only:
+
+- `e2e-tests/Test-E2EDeployedSet.ps1` verifies a deployed `-Path` root against the tenant: every script's uploaded content is compared **byte for byte** (SHA256 of the local bytes against the bytes Graph returns, so a BOM, a CRLF/LF flip or a lost trailing newline fails it), along with `runAsAccount`, `enforceSignatureCheck`, `runAs32Bit`, filename, description, and the full assignment set target for target. Read-only and re-runnable.
+- `e2e-tests/Test-E2EBackupRestore.ps1` covers the update -> backup -> restore path the generated set never exercised: it deploys a throwaway script, updates it to force a backup, verifies the backup file's shape and contents, restores it, and confirms the tenant holds the original bytes again, cleaning up after itself.
+
+Any run that updated something now prints the `backups/` folder and the restore command at the end, so the backups are findable without remembering where they land.
+
+README: dropped a stale `TODO` line, documented `-RestoreAll`, `-AllowTypeOverride` and `#typeoverride:yes` (all previously undocumented), added a flag reference table and a "Signing in" section covering the fresh-sign-in and tenant-confirmation behaviour from v1.8.0.
+
 ### v1.8.4 (2026-07-31)
 
 Fixed `Remove-E2ETestSet.ps1` failing to parse `e2e-metadata.json` with "Bad JSON escape sequence" when a hand-edited value (e.g. a `CONTOSO\GroupName` displayName) contained a literal backslash - the backslash auto-repair added in v1.7.2 only covered `New-E2ETestSet.ps1`, which reads the same file. The repair (`Repair-WizardJsonBackslashes`) is now shared from `lib/Storage.ps1` and applied by both scripts.

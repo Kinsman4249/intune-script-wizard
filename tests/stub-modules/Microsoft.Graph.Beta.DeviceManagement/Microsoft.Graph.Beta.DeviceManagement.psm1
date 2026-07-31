@@ -10,12 +10,22 @@ function Add-StubCall2 {
 
 function ConvertTo-StubScriptObject {
     param($H)
+    # scriptContent is Edm.Binary on the wire, and the real SDK deserialises it
+    # to a byte[] rather than leaving it as the base64 text the service sent.
+    # The stub models that, because handing back a base64 string instead let two
+    # separate byte[]-handling bugs - content hashing in GraphOps, and the
+    # backup writer storing a JSON array of numbers - both pass a green suite.
+    $contentBytes = if ($H['scriptContent']) {
+        [System.Convert]::FromBase64String($H['scriptContent'])
+    } else {
+        $null
+    }
     [pscustomobject]@{
         Id                    = $H['id']
         DisplayName           = $H['displayName']
         Description           = $H['description']
         FileName              = $H['fileName']
-        ScriptContent         = $H['scriptContent']
+        ScriptContent         = $contentBytes
         RunAsAccount          = $H['runAsAccount']
         EnforceSignatureCheck = [bool]$H['enforceSignatureCheck']
         RunAs32BitOnWindows64 = [bool]$H['runAs32Bit']

@@ -21,6 +21,66 @@ $script:GroupReadScope = 'GroupMember.Read.All'
 # 21Vianet without any per-cloud base URL of our own.
 $script:ScriptsUri = '/beta/deviceManagement/deviceManagementScripts'
 
+# Normalises whatever the SDK hands back for a script's scriptContent into raw
+# bytes. Every caller that reads content off an existing script goes through
+# here, because getting this wrong is silent rather than loud:
+#
+# scriptContent is Edm.Binary on the wire (base64 text), but the SDK model
+# deserialises it straight to a byte[]. Passing a byte[] to
+# FromBase64String(string) does not raise a type error - PowerShell coerces the
+# array into a space-separated string of numbers first, which then fails to
+# parse as base64. The mirror-image trap is [string]::IsNullOrWhiteSpace() on a
+# byte[], which is never true for non-empty content, so an "is it empty?" guard
+# written that way silently passes an array straight through to be stored as
+# JSON numbers instead of base64.
+#
+# Returns $null when there is no usable content, so callers decide whether that
+# is a warning or a hard stop. Accepts a base64 string too, which is what
+# restore-from-disk and the offline test stubs supply.
+#
+# Every return of the array uses the unary comma (',$bytes'). PowerShell
+# otherwise enumerates a returned array onto the pipeline, which re-collects as
+# Object[] - and collapses to a single [byte] for one-byte content, where
+# ToBase64String/WriteAllBytes then find no matching overload. The comma hands
+# back the byte[] itself, intact.
+function Get-WizardScriptContentBytes {
+    param([Parameter(Mandatory)][AllowNull()]$Content)
+
+    if ($null -eq $Content) { return $null }
+    if ($Content -is [byte[]]) {
+        if ($Content.Length -eq 0) { return $null }
+        return ,$Content
+    }
+
+    # A backup written before the byte[] handling above was fixed stored the
+    # content as a JSON array of numbers rather than base64 text, and comes back
+    # off disk as an object array. Those files are perfectly recoverable - the
+    # bytes are all there, just spelled differently - so read them rather than
+    # making the operator hand-repair a backup to restore it.
+    if ($Content -isnot [string] -and $Content -is [System.Collections.IEnumerable]) {
+        $numbers = @($Content)
+        if ($numbers.Count -eq 0) { return $null }
+        $bytes = [byte[]]::new($numbers.Count)
+        for ($i = 0; $i -lt $numbers.Count; $i++) {
+            # Anything outside 0-255 is not a byte array that lost its encoding,
+            # it is some other structure entirely - let the caller's own base64
+            # error describe it rather than silently truncating values.
+            $value = $numbers[$i] -as [int]
+            if ($null -eq $value -or $value -lt 0 -or $value -gt 255) { return $null }
+            $bytes[$i] = [byte]$value
+        }
+        return ,$bytes
+    }
+
+    $text = [string]$Content
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    # Deliberately not wrapped in try/catch: a string that is not valid base64
+    # is a genuine error and each caller already has its own message for it.
+    $bytes = [System.Convert]::FromBase64String($text)
+    if ($bytes.Length -eq 0) { return $null }
+    return ,$bytes
+}
+
 # Drops any Graph session already active in this process. Called both before
 # connecting (a session left over from an earlier run, or from a Connect-MgGraph
 # the operator ran by hand for a different tenant earlier in the same shell,
@@ -282,19 +342,11 @@ function Get-WizardExistingScripts {
             $hash = $null
             try {
                 Write-WizardDebug "  downloading content for $($item.Id) '$($item.DisplayName)'"
-                # scriptContent is an Edm.Binary on the wire (a base64-encoded
-                # string), but the SDK model deserialises it straight to a
-                # byte[] rather than leaving it as the base64 text. Passing a
-                # byte[] to FromBase64String(string) doesn't throw a type
-                # error - PowerShell coerces it into a space-separated string
-                # of numbers first, which then fails to parse as base64. Only
-                # base64-decode when the SDK actually handed back a string.
                 $full = Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $item.Id -Property scriptContent
-                $content = $full.ScriptContent
-                if ($null -eq $content -or ($content -is [string] -and [string]::IsNullOrWhiteSpace($content))) {
-                    throw "the tenant returned no script content"
-                }
-                $bytes = if ($content -is [byte[]]) { $content } else { [System.Convert]::FromBase64String($content) }
+                # See Get-WizardScriptContentBytes for why this cannot just
+                # base64-decode the property directly.
+                $bytes = Get-WizardScriptContentBytes -Content $full.ScriptContent
+                if (-not $bytes) { throw "the tenant returned no script content" }
                 $hash = Get-WizardBytesHash -Bytes $bytes
             } catch {
                 Write-Warning "Could not hash existing script '$($item.DisplayName)' ($($item.Id)): $(Get-WizardErrorSummary -ErrorRecord $_). It will not be matched by content this run."

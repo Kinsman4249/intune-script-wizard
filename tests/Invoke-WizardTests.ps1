@@ -180,6 +180,15 @@ Check 'Backup schema version is 3'      ($backup['SchemaVersion'] -eq 3) "got $(
 Check 'Backup recorded replacement name' (-not [string]::IsNullOrWhiteSpace($backup['ReplacedByDisplayName'])) 'ReplacedByDisplayName was blank'
 Check 'Backup recorded replacement hash' (-not [string]::IsNullOrWhiteSpace($backup['ReplacedByContentHash'])) 'ReplacedByContentHash was blank'
 
+# The SDK hands back scriptContent as a byte[], so writing it into the backup
+# unconverted stores a JSON array of numbers instead of base64 text. Restore can
+# now recover such a file, which means a round-trip test alone would not notice
+# - assert the stored shape itself, and that it decodes to the real script.
+Check 'Backup stored content as base64 text' ($backup['ScriptContent'] -is [string]) `
+    "ScriptContent came back as $(if ($null -eq $backup['ScriptContent']) { 'null' } else { $backup['ScriptContent'].GetType().Name })"
+$decodedBackup = try { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String([string]$backup['ScriptContent'])) } catch { '' }
+Check 'Backup content decodes to the script' ($decodedBackup -eq $bodyA) "decoded to '$decodedBackup'"
+
 $backupFilePath = $backupFile.FullName
 
 # Restore that backup and confirm scope tags and the group target come back.

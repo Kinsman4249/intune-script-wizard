@@ -57,6 +57,67 @@ confirm each row's "Expect" column.
 Re-running the generator wipes and rebuilds `generated/` from scratch
 (pass `-NoClean` to add/update files in place instead).
 
+## Verifying a deployed set
+
+Work through `generated/CHECKLIST.md` by hand for the things only a human can
+judge - but everything the tenant can simply be *asked* is automated:
+
+```
+pwsh e2e-tests/Test-E2EDeployedSet.ps1 -Path e2e-tests/generated/main
+```
+
+Run it straight after deploying that root. It re-parses the same local scripts
+the wizard did, reads each one back out of Intune, and checks:
+
+- the script exists under its expected display name
+- the uploaded content is **byte identical** to the local file - SHA256 of the
+  local bytes against SHA256 of the bytes Graph returns. This catches
+  encoding-level damage no eyeball will: a BOM added or stripped, CRLF flipped
+  to LF, a lost trailing newline, or content mangled by wrong base64 handling
+- `runAsAccount` matches the `user/`/`device/` folder (or `#type:`)
+- `enforceSignatureCheck` matches `#scriptcheck:`
+- `runAs32BitOnWindows64` matches `#host:`
+- `fileName` and the description match what was parsed locally
+- the assignment set matches `#group:`/`#excludegroup:`/`#noassignments`
+  exactly, target for target, with nothing left over from an earlier run
+
+It's read-only, so it's safe to re-run at any point. Add `-AllowTypeOverride` if
+the deploy being verified used that flag. Exit code is `0` when everything
+matched, `1` otherwise.
+
+## Backup/restore check
+
+`New-E2ETestSet.ps1` only ever creates new scripts, so nothing in the generated
+set exercises the update -> backup -> restore path. That path is the one where a
+broken backup stays invisible: the wizard reports a successful update, writes a
+file to `backups/`, and only a restore attempt - usually mid-incident - reveals
+whether that file was ever usable.
+
+```
+pwsh e2e-tests/Test-E2EBackupRestore.ps1
+```
+
+This one *does* talk to Graph, and it checks itself rather than handing you a
+checklist. Against the tenant it deploys a throwaway `#noassignments` script,
+updates it (forcing a backup), inspects the backup file on disk, restores it,
+and confirms the tenant really holds the original content again:
+
+- the backup stores `ScriptContent` as base64 **text**, not a JSON array of
+  numbers - the specific failure mode when the SDK's `byte[]` is written
+  through unconverted, which still looks like a successful backup but cannot
+  be restored
+- that content decodes back to the original script byte for byte
+- the restore reinstates it in the tenant, and the used backup is filed under
+  `backups/backup-restored/`
+
+It creates one script named `<runPrefix> Backup-Restore` and deletes it again on
+the way out, even if an assertion failed. Pass `-KeepArtifacts` to leave the
+script and scratch folder behind for inspection. You're asked to confirm the
+tenant once, up front; the wizard runs it drives are non-interactive.
+
+Exit code is `0` when every check passed, `1` otherwise, so it can be wired into
+a pipeline against a dev tenant.
+
 ## Cleaning up
 
 ```

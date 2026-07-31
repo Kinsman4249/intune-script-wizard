@@ -340,6 +340,11 @@ function Write-WizardRunSummary {
     param(
         [Parameter(Mandatory)][hashtable]$Outcomes,
         [Parameter(Mandatory)][AllowEmptyCollection()][array]$Failures,
+        # Printed at the end of any run that updated something, because that is
+        # the only way a backup gets written and "where did it put the backup?"
+        # is the next question - most often asked when the update was wrong and
+        # the answer is needed in a hurry.
+        [string]$BackupDir,
         [switch]$Aborted
     )
 
@@ -366,6 +371,15 @@ function Write-WizardRunSummary {
     } else {
         Write-Host ($counts -join ', ')
         Write-Host "Done." -ForegroundColor Green
+    }
+
+    # Only when something was actually backed up: pointing at an empty or
+    # non-existent folder after a create-only run would be noise.
+    if ($Outcomes['Updated'] -gt 0 -and $BackupDir -and (Test-Path -LiteralPath $BackupDir)) {
+        Write-Host ""
+        Write-Host "Backups of everything updated this run: $BackupDir" -ForegroundColor Cyan
+        Write-Host "  Undo one with: ./Deploy-IntuneScripts.ps1 -Restore '<file>'" -ForegroundColor DarkGray
+        Write-Host "  List them with: ./Deploy-IntuneScripts.ps1 -ListBackups" -ForegroundColor DarkGray
     }
 }
 
@@ -552,7 +566,7 @@ Rename the files, or use #scriptname:"Some Name" to disambiguate them.
         }
     }
 
-    Write-WizardRunSummary -Outcomes $outcomes -Failures $failures -Aborted:$aborted
+    Write-WizardRunSummary -Outcomes $outcomes -Failures $failures -BackupDir $backupDir -Aborted:$aborted
 
     if ($aborted)              { return $script:WizardExitFatal }
     if ($failures.Count -gt 0) { return $script:WizardExitPartial }
