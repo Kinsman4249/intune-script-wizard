@@ -1,3 +1,7 @@
+# TODO
+
+Standalone backup \ restore mode as it's 99% of the way there.
+
 # intune-script-wizard
 
 Deploys PowerShell platform scripts to Microsoft Intune from local `user/` and
