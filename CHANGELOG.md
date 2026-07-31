@@ -1,5 +1,9 @@
 # Change history
 
+### v1.8.1 (2026-07-31)
+
+Changed the missing-modules install prompt's default answer from no to yes: pressing Enter with no input now installs the two required Graph modules instead of declining. Typing `n`/`no` still declines.
+
 ### v1.8.0 (2026-07-31)
 
 Hardened Graph sign-in against a wrong-tenant mistake. `Connect-WizardGraph` now disconnects any Microsoft Graph session already active in the process (e.g. one left over from an earlier `Connect-MgGraph` run by hand, or from a previous wizard run in the same shell) before signing in, so a session for one tenant can never be silently reused for another. Interactive runs are also asked to type back the connected account's domain before anything is created, updated, or restored - a mistaken tenant now has to be confirmed explicitly rather than clicked through. Unattended runs (scheduled tasks, CI) skip that prompt, since nobody is there to answer it, but still log the connected account/tenant. The wizard also now disconnects from Graph when it finishes, successfully or not, so no session is left open for an unrelated later run to inherit.

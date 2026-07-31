@@ -73,8 +73,12 @@ function Install-WizardModules {
             throw "Required modules are missing ($($missing -join ', ')) and this session cannot prompt. Re-run with -AcceptModuleInstall, or install them first with: Install-Module $($missing -join ', ') -Scope CurrentUser"
         }
         # Read-Host pauses and waits for the user to type an answer and press Enter.
-        $answer = Read-Host "Install them now for the current user? (y/N)"
-        if ($answer -notmatch '^(y|yes)$') {
+        # An empty answer (just pressing Enter) defaults to yes - installing two
+        # small, well-known modules is the overwhelmingly common answer, and
+        # -AcceptModuleInstall/an explicit 'n' both remain available for anyone
+        # who wants to skip or decline instead.
+        $answer = Read-Host "Install them now for the current user? (Y/n)"
+        if ($answer -match '^n(o)?$') {
             throw "Required modules are missing and installation was declined. Re-run with -AcceptModuleInstall to skip this prompt."
         }
     }
