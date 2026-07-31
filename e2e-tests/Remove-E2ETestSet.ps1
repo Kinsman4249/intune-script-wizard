@@ -68,7 +68,12 @@ $repo = Split-Path -Parent $here
 if (-not (Test-Path -LiteralPath $MetadataPath)) {
     throw "'$MetadataPath' not found. Run New-E2ETestSet.ps1 first (it creates and explains the metadata file)."
 }
-$metadata = Get-Content -LiteralPath $MetadataPath -Raw | ConvertFrom-Json -AsHashtable
+try {
+    $rawMetadata = Get-Content -LiteralPath $MetadataPath -Raw
+    $metadata = Repair-WizardJsonBackslashes -Json $rawMetadata | ConvertFrom-Json -AsHashtable
+} catch {
+    throw "'$MetadataPath' is not valid JSON: $($_.Exception.Message)"
+}
 if (-not $metadata['answers']['confirmDevTenant']) {
     throw "'$MetadataPath': answers.confirmDevTenant is false. This script deletes real tenant objects - " +
           "set confirmDevTenant to true (same gate New-E2ETestSet.ps1 uses) once you've confirmed you're pointed at a dev tenant."

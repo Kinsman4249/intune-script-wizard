@@ -1,5 +1,9 @@
 # Change history
 
+### v1.8.4 (2026-07-31)
+
+Fixed `Remove-E2ETestSet.ps1` failing to parse `e2e-metadata.json` with "Bad JSON escape sequence" when a hand-edited value (e.g. a `CONTOSO\GroupName` displayName) contained a literal backslash - the backslash auto-repair added in v1.7.2 only covered `New-E2ETestSet.ps1`, which reads the same file. The repair (`Repair-WizardJsonBackslashes`) is now shared from `lib/Storage.ps1` and applied by both scripts.
+
 ### v1.8.3 (2026-07-31)
 
 Fixed `Get-WizardExistingScripts` warning "Could not hash existing script ... input is not a valid Base-64 string" for every script in a tenant. `Get-MgBetaDeviceManagementScript`'s `ScriptContent` property deserialises `scriptContent` straight to a `byte[]`, not the base64 string the wire format uses; passing that array to `[Convert]::FromBase64String` silently coerced it into a bogus space-separated string of numbers first. The existing-script hash now uses the bytes directly when the SDK already returned a `byte[]`, and only base64-decodes when it returned a string.
