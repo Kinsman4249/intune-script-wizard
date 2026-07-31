@@ -62,7 +62,14 @@ if (-not (Test-Path -LiteralPath $MetadataPath)) {
     exit 0
 }
 
-$metadata = Get-Content -LiteralPath $MetadataPath -Raw | ConvertFrom-Json -AsHashtable
+try {
+    $metadata = Get-Content -LiteralPath $MetadataPath -Raw | ConvertFrom-Json -AsHashtable
+}
+catch {
+    throw "'$MetadataPath' is not valid JSON: $($_.Exception.Message)`n" +
+          "A common cause is a literal backslash in a value (e.g. a 'CONTOSO\GroupName' " +
+          "displayName) - backslashes must be escaped as \\ inside JSON strings."
+}
 
 if (-not $metadata['answers']['confirmDevTenant']) {
     throw "'$MetadataPath': answers.confirmDevTenant is false. Set it to true in the metadata file " +
