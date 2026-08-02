@@ -102,3 +102,21 @@ function Repair-WizardJsonBackslashes {
     }
     return $sb.ToString()
 }
+
+# Turns an arbitrary string (typically an Intune display name) into something
+# safe to use as a filename component. An empty or all-punctuation input would
+# collapse to '', so callers supply a -Fallback (e.g. a script id) to use instead.
+function Get-WizardSafeFileName {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Fallback,
+        [int]$MaxLength = 100
+    )
+
+    $safeName = ($Name -replace '[^a-zA-Z0-9._-]', '_')
+    if ([string]::IsNullOrWhiteSpace($safeName.Replace('_', ''))) { $safeName = $Fallback }
+    # Windows caps a path component at 255 characters and Intune allows long
+    # display names, so leave room for whatever the caller appends.
+    if ($safeName.Length -gt $MaxLength) { $safeName = $safeName.Substring(0, $MaxLength) }
+    return $safeName
+}

@@ -303,12 +303,24 @@ function Connect-WizardGraph {
     # type constraint; [string[]] means "an array of strings".
     param(
         # Extra scopes needed by this particular run, e.g. the directory read
-        # used to turn a #group:"Name" into an object id.
-        [string[]]$AdditionalScopes = @()
+        # used to turn a #group:"Name" into an object id. Treated exactly like
+        # $script:RequiredScopes: a tenant that does not grant one of these
+        # fails the whole sign-in.
+        [string[]]$AdditionalScopes = @(),
+
+        # Scopes worth asking for but not worth failing over, e.g. the
+        # directory read used to reverse-resolve a group id back into a name
+        # for template export. A tenant that declines one of these degrades
+        # (bare GUIDs instead of names) rather than blocking sign-in - see
+        # Test-WizardGroupScopeGranted.
+        [string[]]$OptionalScopes = @()
     )
 
-    # Combine the always-needed scopes with any extra ones, then drop duplicates.
-    $scopes = @($script:RequiredScopes) + @($AdditionalScopes) | Select-Object -Unique
+    # Required scopes (always-needed + this run's extras) are checked strictly
+    # below. Optional scopes ride along in the same consent request but are
+    # deliberately left out of that check.
+    $requiredScopes = @($script:RequiredScopes) + @($AdditionalScopes) | Select-Object -Unique
+    $scopes = @($requiredScopes) + @($OptionalScopes) | Select-Object -Unique
 
     # Always start from a clean slate. Reusing an already-signed-in context
     # (the previous behaviour) meant a session opened for one tenant earlier in
@@ -341,7 +353,7 @@ function Connect-WizardGraph {
     # policy trimming the request). Catching that now turns a later, confusing
     # 403 on a specific call into one clear message up front.
     $granted = @($context.Scopes)
-    $notGranted = @($scopes | Where-Object { $_ -notin $granted })
+    $notGranted = @($requiredScopes | Where-Object { $_ -notin $granted })
     if ($notGranted.Count -gt 0) {
         throw "Signed in as $($context.Account), but the tenant did not grant: $($notGranted -join ', '). An administrator needs to consent to these scopes before the wizard can run."
     }
@@ -394,6 +406,51 @@ function Resolve-WizardGroupName {
     return $matched[0]['id']
 }
 
+# Reverse of Resolve-WizardGroupName: turns a group's object id back into its
+# display name, for template export where only the id is known (this is what
+# makes an exported template portable across tenants at all - see handoff).
+#
+# Unlike the forward lookup, a miss here is not fatal: a template with one
+# bare GUID in it is still a usable template, so this returns $null instead
+# of throwing, and leaves it to the caller to fall back to the GUID and warn.
+#
+# $State carries a GroupNames cache (id -> name, $null included for a miss) so
+# a deleted or inaccessible group is looked up once per run, not once per
+# script, and a GroupScopeOk flag: once a lookup fails for a reason other than
+# "not found" (i.e. a 403 from a declined GroupMember.Read.All), every
+# subsequent call short-circuits instead of repeating the same failure.
+function Resolve-WizardGroupDisplayName {
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)]$State
+    )
+
+    if ($State.GroupNames.ContainsKey($Id)) { return $State.GroupNames[$Id] }
+
+    if ($State.GroupScopeOk -eq $false) { return $null }
+
+    $uri = '/v1.0/groups/' + $Id + '?$select=id,displayName'
+    Write-WizardDebug "GET $uri"
+    try {
+        $response = Invoke-WizardGraphRetry -What "Looking up group $Id" -Call {
+            Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable
+        }
+        $name = $response['displayName']
+        $State.GroupNames[$Id] = $name
+        Write-WizardDebug "  $Id -> '$name'"
+        return $name
+    } catch {
+        if (Test-WizardGraphNotFound -ErrorRecord $_) {
+            Write-WizardDebug "  group $Id not found (likely deleted); caching as unresolved"
+        } else {
+            Write-WizardDebug "  group $Id lookup failed, treating as a missing scope and suppressing further lookups this run: $(Get-WizardErrorSummary -ErrorRecord $_)"
+            $State.GroupScopeOk = $false
+        }
+        $State.GroupNames[$Id] = $null
+        return $null
+    }
+}
+
 function Resolve-WizardGroupReferences {
     # Fills IncludeGroupIds/ExcludeGroupIds on every script's metadata. Runs as a
     # pre-flight over the whole set so a typo aborts before any script is
@@ -443,6 +500,16 @@ function Test-WizardNeedsGroupScope {
         }
     }
     return $false
+}
+
+# Whether the current Graph session was actually granted $script:GroupReadScope.
+# Meant to be checked once up front (e.g. to seed a template run's
+# GroupScopeOk) so a declined optional scope produces one clear explanation
+# instead of a 403 per group, per script.
+function Test-WizardGroupScopeGranted {
+    $context = Get-MgContext
+    if (-not $context) { return $false }
+    return ($script:GroupReadScope -in @($context.Scopes))
 }
 
 # Maps our simple 'user'/'device' choice to the Graph @odata.type name used

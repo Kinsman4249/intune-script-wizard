@@ -1,5 +1,9 @@
 # Change history
 
+### v1.13.3 (2026-08-02)
+
+Added foundation for template export: a reverse group lookup (`Resolve-WizardGroupDisplayName`) to turn a group's object id back into a display name during export, and optional scope handling so a tenant's consent policy can decline the template-export read permission (`GroupMember.Read.All`) without failing the whole sign-in - the wizard degrades to bare GUIDs instead. New `Connect-WizardGraph -OptionalScopes` parameter, requested but not required; `Test-WizardGroupScopeGranted` checks whether an optional scope was actually granted. Also extracted filename sanitization into a reusable `Get-WizardSafeFileName` helper in `lib/Storage.ps1` (used by the backup code, and will be used by template export). The template feature itself has not landed at the CLI yet; these are the internal pieces that stage 4 and beyond will wire together.
+
 ### v1.13.0 (2026-08-02)
 
 Added `#notemplate` directive, the foundation for template mode. A script carrying `#notemplate` is still backed up to JSON in full; it is skipped only by the template exporter that will land in a later release. The tag lives in the script body, which is the only thing Intune stores, so it travels into the tenant with the script - once deployed, it needs no local state to stay in sync. Parsing is unified: `Get-ScriptMetadata` reads the directive locally before a deploy, and a future `Test-WizardTemplateExcluded` will read it from the body during export, both matching the same regex pattern so they cannot drift.

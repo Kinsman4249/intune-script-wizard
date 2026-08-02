@@ -103,11 +103,7 @@ function Backup-WizardScript {
 
     # An empty or all-punctuation display name would collapse to '' and produce a
     # file called '_20260728-221500.json'; give it something searchable instead.
-    $safeName = ($full.DisplayName -replace '[^a-zA-Z0-9._-]', '_')
-    if ([string]::IsNullOrWhiteSpace($safeName.Replace('_', ''))) { $safeName = "script-$($full.Id)" }
-    # Windows caps a path component at 255 characters and Intune allows long
-    # display names, so leave room for the timestamp and extension.
-    if ($safeName.Length -gt 100) { $safeName = $safeName.Substring(0, 100) }
+    $safeName = Get-WizardSafeFileName -Name $full.DisplayName -Fallback "script-$($full.Id)"
 
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
     $path = Join-Path $BackupDir "$safeName`_$stamp.json"
