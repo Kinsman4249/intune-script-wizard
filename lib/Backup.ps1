@@ -146,6 +146,47 @@ function Backup-WizardScript {
     return $path
 }
 
+function Resolve-WizardBackupTargets {
+    # Works out which existing Intune script(s) a standalone -Backup/-BackupAll
+    # run should snapshot. Only id + displayName are needed to pick the
+    # target(s), so this stays a lightweight list call - the full read (and the
+    # backup file itself) happens per-script in Backup-WizardScript.
+    param(
+        [string]$NameOrId,
+        [switch]$All
+    )
+
+    $existing = @(Invoke-WizardGraphRetry -What 'Reading existing scripts to back up' -Call {
+        Get-MgBetaDeviceManagementScript -All -Property id, displayName
+    })
+
+    if ($All) { return $existing }
+
+    if ([string]::IsNullOrWhiteSpace($NameOrId)) {
+        throw "Nothing to back up: pass -Backup <name-or-id> or -BackupAll."
+    }
+
+    # Same "GUID first, else display name" idiom used for #group:/#excludegroup:
+    # references, so -Backup takes either form without a separate switch.
+    $parsed = [guid]::Empty
+    if ([guid]::TryParse($NameOrId, [ref]$parsed)) {
+        $matched = @($existing | Where-Object { $_.Id -eq $parsed.ToString() })
+        if ($matched.Count -eq 0) {
+            throw "No script with Id '$NameOrId' found in this tenant."
+        }
+        return $matched
+    }
+
+    $matched = @($existing | Where-Object { $_.DisplayName -eq $NameOrId })
+    if ($matched.Count -eq 0) {
+        throw "No script named '$NameOrId' found in this tenant. Check the spelling, or pass its Id instead."
+    }
+    if ($matched.Count -gt 1) {
+        $ids = ($matched | ForEach-Object { $_.Id }) -join ', '
+        throw "'$NameOrId' is ambiguous - $($matched.Count) scripts share that name ($ids). Use the Id instead."
+    }
+    return $matched
+}
 
 function Get-WizardRestoreAssignments {
     # Turns the raw "Assignments" data from a backup file back into the shape

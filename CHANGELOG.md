@@ -1,5 +1,11 @@
 # Change history
 
+### v1.10.0 (2026-08-02)
+
+Added standalone `-Backup <name|id>` and `-BackupAll`, so a backup no longer has to wait for an update to trigger one. Both connect to the tenant and snapshot into `-Path/backups` exactly as `Update-WizardScript` would - full content, settings, scope tags and assignments - without scanning `-Path` or pushing anything to Intune. `-Backup` takes a script's display name or its Id (Id if the name is ambiguous, which now fails loudly with the matching Ids named rather than guessing); `-BackupAll` backs up everything currently in the tenant in one run. `-DryRun` lists what would be backed up without writing anything, and both are refused alongside `-Restore` since backup and restore are separate operations, not modifiers of one another. Restoring one back is unchanged: same `-Restore <file>` as always.
+
+This was the last piece of a backup/restore mode that had been sitting at "works automatically, but only as a side effect" - most of the underlying plumbing (`Backup-WizardScript`, the on-disk schema, `Restore-WizardBackup`) already existed and needed no changes; this just gives it a front door.
+
 ### v1.9.2 (2026-07-31)
 
 Closed a coverage hole around exclusions given as a bare group GUID. `#group:<guid>` was tested; `#excludegroup:<guid>` was not, in either suite. The offline suite now covers a guid-only exclusion (passed to Graph verbatim, with the all-devices include still in place), a named include combined with a guid exclusion in one script, and the fact that a guid exclusion on its own does not pull in the `GroupMember.Read.All` scope - the guid the tests use is deliberately absent from the stub directory, so any attempt to look it up by name fails the run rather than passing quietly.

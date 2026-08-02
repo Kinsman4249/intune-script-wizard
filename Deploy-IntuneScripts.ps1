@@ -88,6 +88,16 @@
     been deleted since, or a backup being restored into a different tenant.
     Only valid with -Restore.
 
+.PARAMETER Backup
+    Back up one existing Intune script by display name or Id, without scanning
+    -Path or deploying anything. Writes the same snapshot Update-WizardScript
+    would take before an update, into -Path/backups. Combine with -DryRun to
+    see which script would be backed up without writing the file.
+
+.PARAMETER BackupAll
+    Back up every script currently in the tenant, one file each under
+    -Path/backups. Takes no value; -Backup is ignored if also passed.
+
 .PARAMETER ListBackups
     List available backup files under -Path/backups and exit.
 
@@ -109,6 +119,8 @@ param(
     [string]$Restore,
     [switch]$RestoreAll,
     [switch]$SkipAssignments,
+    [string]$Backup,
+    [switch]$BackupAll,
     [switch]$ListBackups,
     [ValidateSet('None', 'Console', 'File', 'Both')]
     [string]$DebugLog = 'None'
@@ -433,6 +445,58 @@ function Invoke-WizardRun {
     # assignments when it had not.
     if ($SkipAssignments -and -not $Restore) {
         throw "-SkipAssignments only applies to a restore. Add -Restore <file|folder>, or drop the switch."
+    }
+    if ($Backup -and $BackupAll) {
+        throw "-Backup and -BackupAll are mutually exclusive: -Backup backs up one script by name or Id, -BackupAll backs up every script in the tenant."
+    }
+    if (($Backup -or $BackupAll) -and $Restore) {
+        throw "-Backup/-BackupAll cannot be combined with -Restore. Run them separately."
+    }
+
+    if ($Backup -or $BackupAll) {
+        # Standalone backup: reads the tenant and writes local snapshot(s),
+        # same as Update-WizardScript takes before an update - but on demand,
+        # with no local -Path scan and nothing pushed to Intune.
+        Connect-WizardGraph
+        $targets = @(Resolve-WizardBackupTargets -NameOrId $Backup -All:$BackupAll)
+        if ($targets.Count -eq 0) {
+            Write-Host "No scripts found in this tenant to back up."
+            return $script:WizardExitOk
+        }
+
+        if ($DryRun) {
+            Write-Host "Would back up $($targets.Count) script(s):"
+            foreach ($target in $targets) { Write-Host "  $($target.DisplayName) ($($target.Id))" }
+            return $script:WizardExitOk
+        }
+
+        Write-Host "Backing up $($targets.Count) script(s) to $backupDir..."
+        $backupFailures = @()
+        foreach ($target in $targets) {
+            try {
+                Backup-WizardScript -Id $target.Id -BackupDir $backupDir | Out-Null
+            } catch {
+                # One script's failure says nothing about the next one's, so the
+                # run keeps going and reports everything at the end - same as
+                # the deploy loop and -RestoreAll below.
+                $reason = Write-WizardFailure -Context "Backing up '$($target.DisplayName)' failed." -ErrorRecord $_
+                $backupFailures += [pscustomobject]@{ Name = $target.DisplayName; Reason = $reason }
+            }
+        }
+
+        Write-Host ""
+        $backedUpCount = $targets.Count - $backupFailures.Count
+        if ($backupFailures.Count -gt 0) {
+            Write-Host "$backedUpCount backed up, $($backupFailures.Count) failed" -ForegroundColor Yellow
+            Write-Host "Failed:" -ForegroundColor Red
+            foreach ($failure in $backupFailures) {
+                Write-Host "  $($failure.Name)" -ForegroundColor Red
+                Write-Host "    $($failure.Reason)" -ForegroundColor Red
+            }
+            return $script:WizardExitPartial
+        }
+        Write-Host "$backedUpCount backed up, all succeeded." -ForegroundColor Green
+        return $script:WizardExitOk
     }
 
     if ($Restore) {

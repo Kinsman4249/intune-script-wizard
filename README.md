@@ -1,7 +1,3 @@
-# TODO
-
-Standalone backup \ restore mode as it's 99% of the way there.
-
 # intune-script-wizard
 
 Deploys PowerShell platform scripts to Microsoft Intune from local `user/` and
@@ -178,6 +174,29 @@ metadata nobody was trying to recover.
 and running it anyway would change the tenant for someone who asked for no
 changes.
 
+### Backing up on demand
+
+A backup is normally an automatic side effect of an update. `-Backup` and
+`-BackupAll` take the same snapshot on demand, without scanning `-Path` or
+deploying anything - useful before a change you're about to make by hand in
+the portal, or just to get a point-in-time copy of everything:
+
+```powershell
+# One script, by display name or Id:
+./Deploy-IntuneScripts.ps1 -Backup "Payroll Script"
+./Deploy-IntuneScripts.ps1 -Backup 8f4c1a2b-....
+
+# Every script currently in the tenant:
+./Deploy-IntuneScripts.ps1 -BackupAll
+```
+
+Each writes into `-Path/backups`, same as an update-triggered backup, and
+restores the same way with `-Restore`. `-Backup` matches a script Id directly,
+or an exact display name - if more than one script shares that name, name the
+Id instead of guessing which one you meant. Add `-DryRun` to list what would
+be backed up without writing anything. `-Backup` and `-BackupAll` can't be
+combined with each other or with `-Restore`.
+
 ## Prerequisites
 
 - PowerShell 7+ (`pwsh`).
@@ -245,6 +264,10 @@ rather than failing later on a confusing `403`.
 
 # Resolve near-duplicates without prompting (for scheduled/unattended runs):
 ./Deploy-IntuneScripts.ps1 -OnFuzzyMatch Skip
+
+# Back up one script, or the whole tenant, without deploying anything:
+./Deploy-IntuneScripts.ps1 -Backup "Payroll Script"
+./Deploy-IntuneScripts.ps1 -BackupAll
 ```
 
 | Flag | Effect |
@@ -257,6 +280,8 @@ rather than failing later on a confusing `403`.
 | `-AcceptModuleInstall` | Install missing Graph modules without prompting |
 | `-Restore <file>` | Restore one backup (add `-RestoreAll` for a whole folder) |
 | `-SkipAssignments` | With `-Restore`: restore content only, leave assignments as they are |
+| `-Backup <name\|id>` | Back up one existing script on demand, no deploy |
+| `-BackupAll` | Back up every script currently in the tenant |
 | `-ListBackups` | List available backups and exit |
 | `-DebugLog None\|Console\|File\|Both` | Trace Graph URLs, bodies and match scores |
 
