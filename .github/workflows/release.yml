@@ -117,7 +117,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.resolve.outputs.tag }}"
-          tag_sha="$(git rev-parse "refs/tags/$tag")"
+          # ^{commit} peels an annotated tag to the commit it points at - a
+          # bare `git rev-parse refs/tags/$tag` returns the tag OBJECT's own
+          # SHA for annotated tags, which never matches a commit SHA.
+          tag_sha="$(git rev-parse "refs/tags/$tag^{commit}")"
           main_sha="$(git rev-parse HEAD)"
           if [[ "$tag_sha" != "$main_sha" ]]; then
             echo "::error::Tag $tag ($tag_sha) does not point at main's current tip ($main_sha)."
