@@ -106,6 +106,37 @@
     host, File writes to -Path/logs/wizard-<timestamp>.log, Both does each.
     The build stamp is printed whenever this is on, and any fatal error is
     recorded there in full.
+
+.PARAMETER SourceRepo
+    One or more git repos to pull user/device scripts from, in addition to
+    whatever -Path itself contains. Each entry is
+    '<git-url>[#<ref>][::<subpath>]' - #<ref> clones that branch/tag instead
+    of the default, and ::<subpath> scans only that folder within the clone
+    for user/ and device/ rather than the clone's root. Repeatable. Each repo
+    is freshly, shallowly cloned into -Path/.repo-sources on every run (never
+    an incremental fetch, so there's no local clone state to reconcile), and
+    needs git installed and on PATH.
+
+.PARAMETER SavePlan
+    Only valid with -DryRun. Writes the exact plan this dry run produced -
+    every script's decided action (create/update/skip), including which
+    fuzzy-match choice was made - to the given JSON file. -ApplyPlan later
+    replays it exactly, rather than recomputing and hoping nothing changed.
+
+.PARAMETER ApplyPlan
+    Replays a plan written by -SavePlan as a real deploy. Before doing
+    anything, it re-checks the local scripts and the tenant against a
+    signature captured when the plan was saved, and refuses to apply if
+    either has changed since - so what gets applied is provably what was
+    reviewed. Cannot be combined with -DryRun, -SavePlan, -ReportCsv,
+    -Restore/-RestoreAll, -Backup/-BackupAll, or -OnFuzzyMatch (the plan
+    already recorded every duplicate-handling decision).
+
+.PARAMETER ReportCsv
+    Only valid with -DryRun. Writes the planned changes to the given CSV file
+    (display name, type, action, assignment target, existing script id where
+    relevant) - a management-approval report that opens straight into Excel,
+    in addition to the usual console summary.
 #>
 [CmdletBinding()]
 param(
@@ -123,7 +154,11 @@ param(
     [switch]$BackupAll,
     [switch]$ListBackups,
     [ValidateSet('None', 'Console', 'File', 'Both')]
-    [string]$DebugLog = 'None'
+    [string]$DebugLog = 'None',
+    [string[]]$SourceRepo,
+    [string]$SavePlan,
+    [string]$ApplyPlan,
+    [string]$ReportCsv
 )
 
 # Stop the whole script the instant any command raises an error, instead of
@@ -143,7 +178,7 @@ $here = $PSScriptRoot
 try {
     foreach ($libFile in @('Errors.ps1', 'Logging.ps1', 'Storage.ps1', 'Prereqs.ps1',
                            'Parsing.ps1', 'Matching.ps1', 'GraphOps.ps1', 'Backup.ps1',
-                           'RepoBackup.ps1', 'Telemetry.ps1')) {
+                           'RepoBackup.ps1', 'RepoSource.ps1', 'Plan.ps1', 'Telemetry.ps1')) {
         $libPath = Join-Path $here 'lib' $libFile
         if (-not (Test-Path -LiteralPath $libPath -PathType Leaf)) {
             throw "Required library file is missing: $libPath. Copy or clone the wizard folder in full, including lib/."
@@ -246,7 +281,12 @@ function Invoke-WizardScriptDeployment {
         [Parameter(Mandatory)]$Meta,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$Registry,
         [Parameter(Mandatory)][string]$BackupDir,
-        [switch]$DryRun
+        [switch]$DryRun,
+        # When set (only by a -DryRun -SavePlan/-ReportCsv run), every outcome
+        # below is also recorded here as a concrete action (Create/Update/
+        # Skip/UpToDate) - see lib/Plan.ps1. $null on a normal run: cheapest
+        # possible no-op for the common case.
+        [System.Collections.Generic.List[object]]$PlanActions
     )
 
     # A hash is a short fingerprint calculated from the file's contents: two
@@ -260,6 +300,7 @@ function Invoke-WizardScriptDeployment {
 
     if ($contentMatch -and $contentMatch.DisplayName -eq $Meta.DisplayName) {
         Write-Host "  Already up to date (content and name match existing script $($contentMatch.Id))."
+        Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'UpToDate'
         return 'UpToDate'
     }
 
@@ -272,11 +313,13 @@ function Invoke-WizardScriptDeployment {
         switch ($action) {
             'Skip' {
                 Write-Host "  Skipped."
+                Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'Skip'
                 return 'Skipped'
             }
             'Replace' {
                 if ($DryRun) {
                     Write-Host "  [DryRun] Would rename/update $($contentMatch.Id) to match local metadata."
+                    Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'Update' -TargetId $contentMatch.Id
                     return 'Planned'
                 }
                 Update-WizardScript -Meta $Meta -ExistingId $contentMatch.Id -BackupDir $BackupDir
@@ -297,6 +340,7 @@ function Invoke-WizardScriptDeployment {
     if ($nameMatch) {
         if ($DryRun) {
             Write-Host "  [DryRun] Would back up and update existing script $($nameMatch.Id)."
+            Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'Update' -TargetId $nameMatch.Id
             return 'Planned'
         }
         Update-WizardScript -Meta $Meta -ExistingId $nameMatch.Id -BackupDir $BackupDir
@@ -327,11 +371,13 @@ function Invoke-WizardScriptDeployment {
         switch ($action) {
             'Skip' {
                 Write-Host "  Skipped."
+                Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'Skip'
                 return 'Skipped'
             }
             'Replace' {
                 if ($DryRun) {
                     Write-Host "  [DryRun] Would back up and replace $($best.Id) with local script."
+                    Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'Update' -TargetId $best.Id
                     return 'Planned'
                 }
                 Update-WizardScript -Meta $Meta -ExistingId $best.Id -BackupDir $BackupDir
@@ -347,11 +393,46 @@ function Invoke-WizardScriptDeployment {
     # is a genuinely new script.
     if ($DryRun) {
         Write-Host "  [DryRun] Would create new script '$($Meta.DisplayName)'."
+        Add-WizardPlanAction -PlanActions $PlanActions -Path $Meta.Path -DisplayName $Meta.DisplayName -Action 'Create'
         return 'Planned'
     }
     $created = New-WizardScript -Meta $Meta
     Register-DeployedScript -Registry $Registry -Id $created.Id -Meta $Meta -ContentHash $localHash
     return 'Created'
+}
+
+# Replays one already-decided plan action (from -ApplyPlan) against the
+# tenant, without re-running any duplicate/fuzzy-match detection - that
+# decision was made and recorded when the plan was saved. The signature check
+# in lib/Plan.ps1 is what makes skipping that re-detection safe.
+function Invoke-WizardPlanAction {
+    param(
+        [Parameter(Mandatory)]$PlanEntry,
+        [Parameter(Mandatory)]$Meta,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$Registry,
+        [Parameter(Mandatory)][string]$BackupDir
+    )
+
+    $localHash = Get-WizardFileHash -Path $Meta.Path
+    switch ($PlanEntry['Action']) {
+        'Create' {
+            $created = New-WizardScript -Meta $Meta
+            Register-DeployedScript -Registry $Registry -Id $created.Id -Meta $Meta -ContentHash $localHash
+            return 'Created'
+        }
+        'Update' {
+            $targetId = $PlanEntry['TargetId']
+            if ([string]::IsNullOrWhiteSpace($targetId)) {
+                throw "Internal error: plan entry for '$($Meta.Path)' is an Update with no TargetId."
+            }
+            Update-WizardScript -Meta $Meta -ExistingId $targetId -BackupDir $BackupDir
+            Register-DeployedScript -Registry $Registry -Id $targetId -Meta $Meta -ContentHash $localHash
+            return 'Updated'
+        }
+        'Skip'     { Write-Host "  Skipped (per plan)."; return 'Skipped' }
+        'UpToDate' { Write-Host "  Already up to date (per plan)."; return 'UpToDate' }
+        default { throw "Internal error: plan entry for '$($Meta.Path)' has an unrecognised action '$($PlanEntry['Action'])'." }
+    }
 }
 
 # Prints the final tally at the end of a run (how many scripts were created,
@@ -452,6 +533,29 @@ function Invoke-WizardRun {
     }
     if (($Backup -or $BackupAll) -and $Restore) {
         throw "-Backup/-BackupAll cannot be combined with -Restore. Run them separately."
+    }
+    if ($SavePlan -and -not $DryRun) {
+        throw "-SavePlan needs -DryRun: a plan is captured from a dry run, not a real deploy."
+    }
+    if ($ReportCsv -and -not $DryRun) {
+        throw "-ReportCsv needs -DryRun: the approval report is a preview, not a record of a real deploy."
+    }
+    if ($ApplyPlan) {
+        if ($DryRun) {
+            throw "-ApplyPlan cannot be combined with -DryRun: a plan is already a dry run's output, and applying it is the real deploy."
+        }
+        if ($SavePlan) {
+            throw "-ApplyPlan cannot be combined with -SavePlan. Save a plan first, then apply it in a separate run."
+        }
+        if ($ReportCsv) {
+            throw "-ApplyPlan cannot be combined with -ReportCsv. Generate the report from the -DryRun that made the plan."
+        }
+        if ($Restore -or $RestoreAll -or $Backup -or $BackupAll) {
+            throw "-ApplyPlan cannot be combined with -Restore/-RestoreAll/-Backup/-BackupAll. Run them separately."
+        }
+        if ($OnFuzzyMatch) {
+            throw "-OnFuzzyMatch has no effect with -ApplyPlan: duplicate-handling decisions are already recorded in the plan from when it was saved. Drop it."
+        }
     }
 
     if ($Backup -or $BackupAll) {
@@ -583,13 +687,33 @@ function Invoke-WizardRun {
             ForEach-Object { $_.FullName }
     )
 
+    # -SourceRepo scans layer on top of -Path, not instead of it: each is
+    # cloned fresh into .repo-sources/ and scanned the same way $resolvedPath
+    # is, and the results are combined into one local script set before the
+    # usual duplicate-name check runs across all of them together.
+    $scanTargets = [System.Collections.Generic.List[object]]::new()
+    $scanTargets.Add([pscustomobject]@{ Root = $resolvedPath; Label = $resolvedPath })
+    if ($SourceRepo -and $SourceRepo.Count -gt 0) {
+        $repoCacheRoot = Join-Path $resolvedPath '.repo-sources'
+        foreach ($rawSpec in $SourceRepo) {
+            $spec = Get-WizardRepoSourceSpec -Raw $rawSpec
+            $scanRoot = Sync-WizardRepoSource -Spec $spec -CacheRoot $repoCacheRoot
+            $scanTargets.Add([pscustomobject]@{ Root = $scanRoot; Label = $spec.Label })
+        }
+    }
+
     # @(...) around a function call forces the result to always be treated as
     # an array/list, even if Find-WizardScripts happens to return exactly one
     # item (PowerShell would otherwise "unwrap" a single result), so
     # .Count below always works correctly.
-    $localScripts = @(Find-WizardScripts -RootPath $resolvedPath -ExcludePath $ownFiles -AllowTypeOverride:$AllowTypeOverride)
+    $localScripts = @()
+    foreach ($target in $scanTargets) {
+        $found = @(Find-WizardScripts -RootPath $target.Root -ExcludePath $ownFiles -AllowTypeOverride:$AllowTypeOverride)
+        Write-WizardDebug "Found $($found.Count) script(s) under $($target.Label)"
+        $localScripts += $found
+    }
     if ($localScripts.Count -eq 0) {
-        Write-Host "No scripts found under user/ or device/ (or loose scripts with #type:)."
+        Write-Host "No scripts found under user/ or device/ (or loose scripts with #type:), across $($scanTargets.Count) source(s)."
         return $script:WizardExitOk
     }
 
@@ -634,28 +758,86 @@ Rename the files, or use #scriptname:"Some Name" to disambiguate them.
     $failures = @()
     $aborted = $false
 
-    foreach ($meta in $localScripts) {
-        Write-Host ""
-        Write-Host "== $($meta.DisplayName) [$($meta.Type)] ==" -ForegroundColor Cyan
-        Write-Host "   assignment: $(Get-WizardAssignmentSummary -Meta $meta)" -ForegroundColor DarkGray
+    if ($ApplyPlan) {
+        # Replaying a saved plan: no fuzzy-match prompting, no fresh
+        # duplicate detection - just the actions already decided when the
+        # plan was saved, and only once they are proven to still apply to
+        # exactly this local/tenant state.
+        $applyPlanData = Read-WizardPlan -PlanFile $ApplyPlan
+        Assert-WizardPlanSignatureMatches -Plan $applyPlanData -LocalScripts $localScripts -ExistingScripts $existingScripts
+        Write-Host "Plan signature matches; applying $(@($applyPlanData['Actions']).Count) recorded action(s) from $ApplyPlan." -ForegroundColor Cyan
 
-        try {
-            $outcome = Invoke-WizardScriptDeployment -Meta $meta -Registry $existingScripts `
-                -BackupDir $backupDir -DryRun:$DryRun
-            $outcomes[$outcome]++
-        } catch {
-            # One script's failure says nothing about the next one's, so by
-            # default the run keeps going and reports everything at the end.
-            $reason = Write-WizardFailure -Context "Deploying '$($meta.DisplayName)' failed." -ErrorRecord $_
-            $failures += [pscustomobject]@{
-                DisplayName = $meta.DisplayName
-                Path        = $meta.Path
-                Reason      = $reason
+        $planByPath = @{}
+        foreach ($entry in $applyPlanData['Actions']) { $planByPath[$entry['Path']] = $entry }
+
+        foreach ($meta in $localScripts) {
+            $entry = $planByPath[$meta.Path]
+            if (-not $entry) {
+                throw "Internal error: no plan entry found for '$($meta.Path)' even though the plan signature matched."
             }
-            if ($StopOnError) {
-                $aborted = $true
-                break
+
+            Write-Host ""
+            Write-Host "== $($meta.DisplayName) [$($meta.Type)] ==" -ForegroundColor Cyan
+            Write-Host "   assignment: $(Get-WizardAssignmentSummary -Meta $meta)" -ForegroundColor DarkGray
+
+            try {
+                $outcome = Invoke-WizardPlanAction -PlanEntry $entry -Meta $meta -Registry $existingScripts -BackupDir $backupDir
+                $outcomes[$outcome]++
+            } catch {
+                $reason = Write-WizardFailure -Context "Applying planned action for '$($meta.DisplayName)' failed." -ErrorRecord $_
+                $failures += [pscustomobject]@{
+                    DisplayName = $meta.DisplayName
+                    Path        = $meta.Path
+                    Reason      = $reason
+                }
+                if ($StopOnError) {
+                    $aborted = $true
+                    break
+                }
             }
+        }
+    } else {
+        # Only a -DryRun -SavePlan/-ReportCsv run needs every decided action
+        # recorded; a normal run leaves this $null, which Add-WizardPlanAction
+        # (called from inside Invoke-WizardScriptDeployment) treats as a no-op.
+        # Assigned via an explicit if/else (not "$x = if (...) {...} else {...}")
+        # because an empty List[object] returned as an if-expression's value gets
+        # enumerated onto the pipeline - zero items in, so the assignment would
+        # capture $null instead of the (still-empty) list.
+        $planActions = $null
+        if ($SavePlan -or $ReportCsv) { $planActions = [System.Collections.Generic.List[object]]::new() }
+
+        foreach ($meta in $localScripts) {
+            Write-Host ""
+            Write-Host "== $($meta.DisplayName) [$($meta.Type)] ==" -ForegroundColor Cyan
+            Write-Host "   assignment: $(Get-WizardAssignmentSummary -Meta $meta)" -ForegroundColor DarkGray
+
+            try {
+                $outcome = Invoke-WizardScriptDeployment -Meta $meta -Registry $existingScripts `
+                    -BackupDir $backupDir -DryRun:$DryRun -PlanActions $planActions
+                $outcomes[$outcome]++
+            } catch {
+                # One script's failure says nothing about the next one's, so by
+                # default the run keeps going and reports everything at the end.
+                $reason = Write-WizardFailure -Context "Deploying '$($meta.DisplayName)' failed." -ErrorRecord $_
+                $failures += [pscustomobject]@{
+                    DisplayName = $meta.DisplayName
+                    Path        = $meta.Path
+                    Reason      = $reason
+                }
+                if ($StopOnError) {
+                    $aborted = $true
+                    break
+                }
+            }
+        }
+
+        if ($SavePlan -and -not $aborted -and $failures.Count -eq 0) {
+            $signature = Get-WizardPlanSignature -LocalScripts $localScripts -ExistingScripts $existingScripts
+            Save-WizardPlan -PlanFile $SavePlan -ResolvedPath $resolvedPath -Signature $signature -Actions $planActions
+        }
+        if ($ReportCsv -and -not $aborted -and $failures.Count -eq 0) {
+            Export-WizardPlanCsv -Actions $planActions -LocalScripts $localScripts -CsvFile $ReportCsv
         }
     }
 

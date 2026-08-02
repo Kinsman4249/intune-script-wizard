@@ -237,6 +237,88 @@ The choice (provider + remote URL, never a secret) lives in
 elsewhere. Delete the file to be asked again, or to switch to a different
 repo/provider.
 
+## Sourcing scripts from a git repo
+
+`-Path` isn't the only place scripts can come from. `-SourceRepo` pulls
+`user/`/`device/` scripts straight from one or more git repos too, on top of
+whatever `-Path` itself contains:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -SourceRepo https://github.com/contoso/intune-scripts.git
+```
+
+Each entry is `<git-url>[#<ref>][::<subpath>]`:
+
+```powershell
+# A specific branch or tag instead of the repo's default:
+-SourceRepo https://github.com/contoso/intune-scripts.git#release
+
+# Only a subfolder within the repo, rather than its root:
+-SourceRepo https://github.com/contoso/intune-scripts.git::platform/win11
+
+# Both, and more than one repo (repeat the flag):
+./Deploy-IntuneScripts.ps1 `
+  -SourceRepo "https://github.com/contoso/intune-scripts.git#release::platform/win11" `
+  -SourceRepo "https://github.com/contoso/intune-scripts-2.git"
+```
+
+Every repo is cloned fresh (a shallow `git clone --depth 1`) into
+`-Path/.repo-sources` on every run - never an incremental fetch, so there's
+never local clone state to reconcile - and needs `git` installed and on
+PATH. Scripts found this way go through exactly the same parsing, duplicate
+detection, and the same run-wide duplicate-display-name check as everything
+under `-Path`, so a script sourced from a repo and one on local disk sharing
+a display name still aborts the run before touching the tenant.
+
+## Reviewing and replaying a dry run
+
+A `-DryRun` shows what would happen, but running it "for real" afterwards
+recomputes everything from scratch - if the tenant changed in between, what
+actually gets applied can quietly drift from what was reviewed.
+
+`-SavePlan` fixes that by writing the dry run's exact decisions (including
+which choice was made for every near-duplicate) to a file:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -DryRun -SavePlan ./deploy-plan.json
+```
+
+`-ApplyPlan` then replays that file as the real deploy, with no re-prompting
+and no fresh duplicate detection - every action was already decided when the
+plan was saved:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -ApplyPlan ./deploy-plan.json
+```
+
+Before applying anything, it recomputes a signature over the current local
+scripts (content and every meta-comment setting) and the current tenant
+(every existing script's id, content hash and name) and compares it against
+the one captured when the plan was saved. If either side has changed at all
+- a script edited locally, one deleted or renamed in the tenant, anything -
+`-ApplyPlan` refuses outright rather than guessing:
+
+```
+-ApplyPlan refused: the local scripts and/or the tenant have changed since
+this plan was saved, so replaying it would not be the plan that was
+reviewed. Run -DryRun -SavePlan again to make a fresh one.
+```
+
+`-ApplyPlan` cannot be combined with `-DryRun`, `-SavePlan`, `-ReportCsv`,
+`-Restore`/`-RestoreAll`, `-Backup`/`-BackupAll`, or `-OnFuzzyMatch` (every
+duplicate-handling decision is already in the plan).
+
+### A management-approval report
+
+`-ReportCsv` (also only valid with `-DryRun`) writes the same decided
+actions to a CSV - display name, type, action, assignment target, and the
+existing script's id where relevant - for sign-off outside the console. It
+opens straight into Excel, and can be used with or without `-SavePlan`:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -DryRun -SavePlan ./deploy-plan.json -ReportCsv ./deploy-report.csv
+```
+
 ## Prerequisites
 
 - PowerShell 7+ (`pwsh`).
@@ -308,6 +390,11 @@ rather than failing later on a confusing `403`.
 # Back up one script, or the whole tenant, without deploying anything:
 ./Deploy-IntuneScripts.ps1 -Backup "Payroll Script"
 ./Deploy-IntuneScripts.ps1 -BackupAll
+
+# Pull scripts from a repo too, and save/replay a reviewed plan:
+./Deploy-IntuneScripts.ps1 -SourceRepo https://github.com/contoso/intune-scripts.git
+./Deploy-IntuneScripts.ps1 -DryRun -SavePlan ./deploy-plan.json -ReportCsv ./deploy-report.csv
+./Deploy-IntuneScripts.ps1 -ApplyPlan ./deploy-plan.json
 ```
 
 | Flag | Effect |
@@ -323,6 +410,10 @@ rather than failing later on a confusing `403`.
 | `-Backup <name\|id>` | Back up one existing script on demand, no deploy |
 | `-BackupAll` | Back up every script currently in the tenant |
 | `-ListBackups` | List available backups and exit |
+| `-SourceRepo <url[#ref][::subpath]>` | Also pull scripts from a git repo (repeatable) |
+| `-SavePlan <file>` | With `-DryRun`: save the exact plan to replay later |
+| `-ApplyPlan <file>` | Replay a plan saved by `-SavePlan` as the real deploy |
+| `-ReportCsv <file>` | With `-DryRun`: write the planned changes to a CSV |
 | `-DebugLog None\|Console\|File\|Both` | Trace Graph URLs, bodies and match scores |
 
 ### When something fails
@@ -409,6 +500,12 @@ script not stopping the rest, `-StopOnError`, each exit code, a tenant that
 withholds a requested scope, corrupt backup files being rejected before any
 Graph call, and fatal errors reaching stderr.
 
+It also covers `-SourceRepo` (cloning a real local git repo, subpath scanning,
+and combining repo scripts with `-Path`'s own), and `-SavePlan`/`-ApplyPlan`
+(a saved plan replaying cleanly against unchanged state, and `-ApplyPlan`
+refusing outright once a local file or the tenant has drifted since the plan
+was saved) and `-ReportCsv`.
+
 It also covers the restore edge cases specifically: a throttled tenant being
 waited out and then giving up, a transient failure not being mistaken for a
 deleted script, backups predating the current schema, colliding backup file
@@ -469,23 +566,6 @@ Local usernames, hostnames, IPs, file paths, tenant/object GUIDs, and
 anything token- or password-shaped are stripped out before the report is
 even saved locally - see [PRIVACY.md](PRIVACY.md) for the exact list and how
 to opt out.
-
-## Roadmap
-
-- **Source scripts from a repo, not just local folders.** `-Path` today only
-  ever reads `user/`/`device/` off local disk. Planned: point it at a git
-  repo (or a list of them) instead, including pulling from a specific
-  subfolder within a repo rather than the whole thing - so deploying and
-  sourcing can both go through git instead of only backups doing so.
-- **Re-run a `-DryRun` for real, guaranteed identical.** A flag that replays
-  the exact plan a previous `-DryRun` produced (not just "run again and hope
-  nothing in the tenant changed underneath it in between") - what gets
-  applied is provably what was reviewed, not a fresh recompute that happens
-  to usually match.
-- **A management-approval report from `-DryRun`.** A flag that has `-DryRun`
-  also write a nicely formatted report of the planned changes - CSV is
-  enough, since it opens straight into Excel for anyone who wants a nicer
-  table - instead of only the console summary.
 
 ## License
 

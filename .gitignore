@@ -2,6 +2,7 @@
 backups/
 .intune-script-cache.json
 logs/
+.repo-sources/
 
 # Session notes (see CLAUDE.md workflow)
 handoff.md
