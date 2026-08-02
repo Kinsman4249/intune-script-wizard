@@ -120,6 +120,14 @@ $script:TelemetryScrubPatterns = @(
     # IPv4 and IPv6 addresses.
     @('\b\d{1,3}(\.\d{1,3}){3}\b', '<ip>'),
     @('\b([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\b', '<ip>'),
+    # Full URLs - repo backup errors can carry a remote's URL (org/repo name
+    # is as identifying as an email address), and Graph error bodies
+    # sometimes echo request URLs back. Scrubbed whole, before the narrower
+    # patterns below, so a URL never survives partially redacted (e.g. only
+    # its host swallowed by the email pattern).
+    @('https?://\S+', '<url>'),
+    # git@host:org/repo.git style SSH remotes.
+    @('\bgit@[\w.-]+:\S+', '<url>'),
     # Windows per-user paths and UNC shares, e.g. C:\Users\jsmith\... or \\server\share.
     @('[A-Za-z]:\\Users\\[^\\]+', '<path>'),
     @('\\\\[^\\]+\\', '<path>\\'),

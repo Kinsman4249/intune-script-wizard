@@ -36,6 +36,15 @@ function Test-WizardPSVersion {
     }
 }
 
+# Checks whether an external executable (git, gh, az, ...) is on PATH,
+# without letting a missing one throw - callers use this to pick between
+# several optional tools rather than hard-requiring any single one.
+function Test-WizardCommandAvailable {
+    param([Parameter(Mandatory)][string]$Name)
+
+    return [bool](Get-Command -Name $Name -ErrorAction SilentlyContinue)
+}
+
 function Test-WizardModules {
     # Returns the list of required modules that are not yet installed.
     $missing = @()

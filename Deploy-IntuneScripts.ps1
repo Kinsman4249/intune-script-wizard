@@ -142,7 +142,8 @@ $here = $PSScriptRoot
 # wizard's own error reporting exists, so it gets its own plain try/catch.
 try {
     foreach ($libFile in @('Errors.ps1', 'Logging.ps1', 'Storage.ps1', 'Prereqs.ps1',
-                           'Parsing.ps1', 'Matching.ps1', 'GraphOps.ps1', 'Backup.ps1', 'Telemetry.ps1')) {
+                           'Parsing.ps1', 'Matching.ps1', 'GraphOps.ps1', 'Backup.ps1',
+                           'RepoBackup.ps1', 'Telemetry.ps1')) {
         $libPath = Join-Path $here 'lib' $libFile
         if (-not (Test-Path -LiteralPath $libPath -PathType Leaf)) {
             throw "Required library file is missing: $libPath. Copy or clone the wizard folder in full, including lib/."
@@ -486,6 +487,7 @@ function Invoke-WizardRun {
 
         Write-Host ""
         $backedUpCount = $targets.Count - $backupFailures.Count
+        if ($backedUpCount -gt 0) { Push-WizardBackupsToRepo -BackupDir $backupDir }
         if ($backupFailures.Count -gt 0) {
             Write-Host "$backedUpCount backed up, $($backupFailures.Count) failed" -ForegroundColor Yellow
             Write-Host "Failed:" -ForegroundColor Red
@@ -658,6 +660,7 @@ Rename the files, or use #scriptname:"Some Name" to disambiguate them.
     }
 
     Write-WizardRunSummary -Outcomes $outcomes -Failures $failures -BackupDir $backupDir -Aborted:$aborted
+    if (-not $DryRun -and $outcomes['Updated'] -gt 0) { Push-WizardBackupsToRepo -BackupDir $backupDir }
 
     if ($aborted)              { return $script:WizardExitFatal }
     if ($failures.Count -gt 0) { return $script:WizardExitPartial }

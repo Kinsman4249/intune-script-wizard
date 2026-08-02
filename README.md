@@ -197,6 +197,46 @@ Id instead of guessing which one you meant. Add `-DryRun` to list what would
 be backed up without writing anything. `-Backup` and `-BackupAll` can't be
 combined with each other or with `-Restore`.
 
+### Pushing backups to a remote repo
+
+`-Path/backups` is local-only by default (and gitignored in this repo) - lose
+the machine and you lose the backup history with it. The first time a run
+actually writes a backup, the wizard offers, once, to also push `backups/` to
+a remote git repo:
+
+```
+Also back up these backup files to a remote git repo? (y/N)
+```
+
+Say no and it's remembered - you won't be asked again unless you delete
+`repo-backup-config.json` (see below). Say yes and give it a repo URL, and it
+picks an auth method based on what's installed:
+
+- **GitHub, GitLab, or any plain git host**: uses `gh` (GitHub CLI) for a
+  one-command interactive sign-in if it's installed, or falls back to asking
+  for a personal access token. Either way, the token is handed straight to
+  `git credential approve` and stored by whatever OS-native credential helper
+  is already configured (Git Credential Manager if installed, else
+  Keychain/Windows Credential Manager/libsecret) - the wizard never writes a
+  token to a file of its own.
+- **Azure DevOps** (a `dev.azure.com` or `*.visualstudio.com` URL): offers
+  Microsoft's own [recommended
+  alternative](https://learn.microsoft.com/azure/devops/integrate/get-started/authentication/entra)
+  to a PAT - signing in with `az login` and fetching a short-lived Microsoft
+  Entra token fresh on every push - when the Azure CLI (`az`) is installed,
+  or a PAT the same way as plain git otherwise.
+
+Once configured, every run that writes a new backup pushes automatically -
+no further prompting. A push failure is only ever a warning: the local
+backup already happened and is what `-Restore` actually depends on, so
+nothing about the run itself is affected.
+
+The choice (provider + remote URL, never a secret) lives in
+`repo-backup-config.json`, next to the wizard's other local state:
+`%APPDATA%\IntuneScriptWizard\` on Windows, `~/.intune-script-wizard/`
+elsewhere. Delete the file to be asked again, or to switch to a different
+repo/provider.
+
 ## Prerequisites
 
 - PowerShell 7+ (`pwsh`).
@@ -429,6 +469,23 @@ Local usernames, hostnames, IPs, file paths, tenant/object GUIDs, and
 anything token- or password-shaped are stripped out before the report is
 even saved locally - see [PRIVACY.md](PRIVACY.md) for the exact list and how
 to opt out.
+
+## Roadmap
+
+- **Source scripts from a repo, not just local folders.** `-Path` today only
+  ever reads `user/`/`device/` off local disk. Planned: point it at a git
+  repo (or a list of them) instead, including pulling from a specific
+  subfolder within a repo rather than the whole thing - so deploying and
+  sourcing can both go through git instead of only backups doing so.
+- **Re-run a `-DryRun` for real, guaranteed identical.** A flag that replays
+  the exact plan a previous `-DryRun` produced (not just "run again and hope
+  nothing in the tenant changed underneath it in between") - what gets
+  applied is provably what was reviewed, not a fresh recompute that happens
+  to usually match.
+- **A management-approval report from `-DryRun`.** A flag that has `-DryRun`
+  also write a nicely formatted report of the planned changes - CSV is
+  enough, since it opens straight into Excel for anyone who wants a nicer
+  table - instead of only the console summary.
 
 ## License
 
