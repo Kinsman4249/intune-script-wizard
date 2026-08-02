@@ -3,6 +3,13 @@
 # Comments are left in the uploaded script content untouched - they're valid
 # PowerShell comments and cause no harm at runtime on the endpoint.
 
+# Single source of truth for the "#notemplate" directive, shared by two callers
+# that must agree exactly: Get-ScriptMetadata (reading a local .ps1 before a
+# deploy) and Test-WizardTemplateExcluded (reading a body back out of the
+# tenant during an export). Drift between them would exclude a script in one
+# direction only.
+$script:WizardNoTemplatePattern = '^#\s*notemplate\s*$'
+
 # Takes the raw text after "#group:" (or "#excludegroup:") and returns it
 # with any surrounding quotes removed, ready to use as a group name or GUID.
 function Get-WizardGroupRefValue {
@@ -62,6 +69,7 @@ function Get-ScriptMetadata {
     $typeFromComment = $null
     $typeOverride = $false
     $noAssignments = $false
+    $noTemplate = $false
     $enforceSignatureCheck = $false
     $runAs32Bit = $true   # default: do NOT run in 64-bit PowerShell host
     # $inDesc is a flag: true while we're reading lines between #startdesc and
@@ -116,6 +124,10 @@ function Get-ScriptMetadata {
         }
         if ($trimmed -match '^#\s*noassig(?:n)?ments?\s*$') {
             $noAssignments = $true
+            continue
+        }
+        if ($trimmed -match $script:WizardNoTemplatePattern) {
+            $noTemplate = $true
             continue
         }
         if ($trimmed -match '^#\s*scriptcheck\s*:\s*yes\s*$') {
@@ -195,6 +207,7 @@ function Get-ScriptMetadata {
         Description           = $description
         Type                  = $type
         NoAssignments         = $noAssignments
+        NoTemplate            = $noTemplate
         EnforceSignatureCheck = $enforceSignatureCheck
         RunAs32Bit            = $runAs32Bit
         RunAsAccount          = if ($type -eq 'user') { 'user' } else { 'system' }

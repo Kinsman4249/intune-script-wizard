@@ -1,5 +1,9 @@
 # Change history
 
+### v1.13.0 (2026-08-02)
+
+Added `#notemplate` directive, the foundation for template mode. A script carrying `#notemplate` is still backed up to JSON in full; it is skipped only by the template exporter that will land in a later release. The tag lives in the script body, which is the only thing Intune stores, so it travels into the tenant with the script - once deployed, it needs no local state to stay in sync. Parsing is unified: `Get-ScriptMetadata` reads the directive locally before a deploy, and a future `Test-WizardTemplateExcluded` will read it from the body during export, both matching the same regex pattern so they cannot drift.
+
 ### v1.12.0 (2026-08-02)
 
 Added `-SourceRepo <url>[#ref][::subpath]` (repeatable), so scripts can be pulled from one or more git repos instead of only local disk - the three items that were sitting in the README's Roadmap section. Each entry clones fresh (a shallow `git clone --depth 1`, never an incremental fetch, so there is no local clone state to reconcile) into `-Path/.repo-sources` on every run, optionally at a given branch/tag (`#ref`) and scanning only a subfolder of the clone (`::subpath`) rather than its root. Repo-sourced scripts go through exactly the same parsing and duplicate detection as `-Path`'s own, combined into one local script set before the run-wide duplicate-display-name check runs across all of them together - a script sourced from a repo and one on local disk sharing a display name still aborts the run before touching the tenant. New `lib/RepoSource.ps1`; entirely separate from `lib/RepoBackup.ps1`, which pushes backups *out* to a remote rather than pulling scripts *in* from one.
