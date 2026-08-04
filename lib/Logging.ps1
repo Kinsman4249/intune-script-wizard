@@ -10,7 +10,7 @@
 # Bump this by hand on release; /release keeps it in step with the git tag.
 # Shown whenever debug logging is enabled so a pasted log can be tied back to an
 # exact build.
-$script:WizardVersion = '1.13.3'
+$script:WizardVersion = '1.13.4'
 
 $script:DebugToConsole = $false
 $script:DebugToFile    = $false
