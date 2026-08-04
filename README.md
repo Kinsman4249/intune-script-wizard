@@ -39,6 +39,7 @@ effect on the endpoint.
 | `#excludegroup:"Name"` or `#excludegroup:<guid>` | Exclude this group from the assignment. Repeatable |
 | `#scriptcheck:yes` | Enforce script signature check (default: off) |
 | `#host:64` | Run under 64-bit PowerShell host (default: 32-bit) |
+| `#notemplate` | Exclude this script from `-Backup`/`-BackupAll`'s `.ps1` template export only - it still gets backed up and deployed normally. Lives in the script body, so it travels into the tenant with the script and is honoured on every future export |
 
 See [examples/user/Example-UserScript.ps1](examples/user/Example-UserScript.ps1)
 and [examples/device/Example-DeviceScript.ps1](examples/device/Example-DeviceScript.ps1).
@@ -197,20 +198,85 @@ Id instead of guessing which one you meant. Add `-DryRun` to list what would
 be backed up without writing anything. `-Backup` and `-BackupAll` can't be
 combined with each other or with `-Restore`.
 
-### Pushing backups to a remote repo
+Unless `-NoTemplates` is passed, each one also exports a `.ps1` template of
+the script - see "Exporting templates" below.
 
-`-Path/backups` is local-only by default (and gitignored in this repo) - lose
-the machine and you lose the backup history with it. The first time a run
-actually writes a backup, the wizard offers, once, to also push `backups/` to
-a remote git repo:
+### Exporting templates
+
+`-Backup`/`-BackupAll` don't just snapshot JSON - they also regenerate a
+deployable `.ps1` template of each script's *current tenant state*, written
+to `-Path/templates/user/` or `-Path/templates/device/`. Where a JSON backup
+in `backups/` is a restore point for *this* tenant, a template is meant to go
+the other way: edit it, commit it to a git repo, and deploy that repo into
+*another* tenant with `-SourceRepo` or `-Path`. That's the promote-between-
+tenants workflow this feature exists for - see `-SourceRepo` above.
+
+A template file is the script's current body with a header stamped on top,
+regenerating every meta comment this tool understands from the tenant's live
+settings: `#scriptname:`, `#type:`, a `#startdesc`/`#enddesc` block if there's
+a description, `#scriptcheck:yes`/`#host:64` if either is non-default,
+`#group:`/`#excludegroup:` for each assignment target (group ids are
+reverse-resolved back to their display names - see below), and
+`#noassignments` if the script currently has none. Re-exporting a script
+whose template already exists updates the header in place and leaves
+everything below it - the actual script body - untouched.
+
+Group ids can't be resolved back to a name without the optional
+`GroupMember.Read.All` scope (see "Signing in"); if it's declined, or a group
+has since been deleted, the directive is still written using the bare GUID,
+with a `# WARNING:` comment above it explaining why and a matching console
+warning. The export is never blocked by this - worst case, a template just
+carries a GUID that only makes sense in the tenant it came from.
+
+Every export also stamps a doubled, deliberately inert
+`##typeoverride:yes` (note the two `#`s) with a one-line comment above it
+explaining what deleting the second `#` does. Regular exports never turn a
+live `#typeoverride:yes` back on by themselves - if you move a template from
+`device/` to `user/` on purpose to reclassify it, deleting that one `#` is
+how you tell the wizard the folder is wrong on purpose, not the tool doing it
+for you.
+
+`role scope tag`s are **not** carried over as a directive - they're recorded
+only in an informational comment, because a scope tag id doesn't denote the
+same tag in another tenant, and Graph rejects a request naming one that
+doesn't exist there.
+
+A script carrying `#notemplate` is skipped by the export (it still gets a
+normal JSON backup) - see the meta-comment table above. `-BackupAll` exports
+a template for every other script in the tenant, whether or not you actually
+intend to promote it anywhere; curating that down to what belongs in a repo
+is a plain `git add` of the files you want, not something the wizard tries to
+guess at.
+
+A template deployed back into the *same* tenant it was exported from will
+look like a real content change on the next run - the header text wasn't
+there before - so expect one update, and the backup that comes with it,
+the first time that happens.
+
+### Pushing backups (and templates) to a remote repo
+
+`-Path/backups` and `-Path/templates` are local-only by default (and both
+gitignored in this repo) - lose the machine and you lose that history with
+it. The first time a run actually writes a backup, the wizard offers, once,
+to also push `backups/` to a remote git repo:
 
 ```
 Also back up these backup files to a remote git repo? (y/N)
 ```
 
-Say no and it's remembered - you won't be asked again unless you delete
-`repo-backup-config.json` (see below). Say yes and give it a repo URL, and it
-picks an auth method based on what's installed:
+The first time a run exports a template, it separately offers the same for
+`templates/`:
+
+```
+Also push exported templates to a remote git repo? (y/N)
+```
+
+Say no to either and it's remembered - you won't be asked again for that one
+unless you delete its config file (see below). Backups and templates are two
+independent prompts, config files, and git repos: declining one never
+silences the other, and pushing the exported templates elsewhere doesn't
+require pushing backups anywhere at all (or vice versa). Say yes and give it
+a repo URL, and it picks an auth method based on what's installed:
 
 - **GitHub, GitLab, or any plain git host**: uses `gh` (GitHub CLI) for a
   one-command interactive sign-in if it's installed, or falls back to asking
@@ -226,16 +292,29 @@ picks an auth method based on what's installed:
   Entra token fresh on every push - when the Azure CLI (`az`) is installed,
   or a PAT the same way as plain git otherwise.
 
-Once configured, every run that writes a new backup pushes automatically -
-no further prompting. A push failure is only ever a warning: the local
-backup already happened and is what `-Restore` actually depends on, so
-nothing about the run itself is affected.
+Once configured, every run that writes a new backup (or exports a template)
+pushes automatically - no further prompting. A push failure is only ever a
+warning: the local copy already happened and is what `-Restore` (or the next
+promote) actually depends on, so nothing about the run itself is affected.
 
-The choice (provider + remote URL, never a secret) lives in
-`repo-backup-config.json`, next to the wizard's other local state:
-`%APPDATA%\IntuneScriptWizard\` on Windows, `~/.intune-script-wizard/`
-elsewhere. Delete the file to be asked again, or to switch to a different
-repo/provider.
+`backups/` and `templates/` become two unrelated git repos with disjoint
+histories the moment each is first pushed, so pointing both at the same
+remote branch means each push rejects the other's history. Setting up the
+templates push warns and asks you to confirm if you give it the same URL
+already configured for backups; say no there unless you really mean it.
+
+The choice (provider + remote URL, never a secret) for backups lives in
+`repo-backup-config.json`; the templates one lives in a second, independent
+file, `repo-template-config.json` - both next to the wizard's other local
+state: `%APPDATA%\IntuneScriptWizard\` on Windows, `~/.intune-script-wizard/`
+elsewhere. Delete either file to be asked again for that one, or to switch it
+to a different repo/provider.
+
+A template's exported group display names (unlike a JSON backup, which is
+never pushed anywhere by default either) are what's leaving the machine if
+you configure this for `templates/` - a new class of data beyond the backup
+history alone, worth knowing about before pointing it at a repo you don't
+control.
 
 ## Sourcing scripts from a git repo
 
@@ -269,6 +348,11 @@ PATH. Scripts found this way go through exactly the same parsing, duplicate
 detection, and the same run-wide duplicate-display-name check as everything
 under `-Path`, so a script sourced from a repo and one on local disk sharing
 a display name still aborts the run before touching the tenant.
+
+A repo built by pushing `-Path/templates` (see "Exporting templates" above)
+is already laid out as `user/`/`device/` at its root, so it's directly
+consumable here with no `::subpath` needed - `-SourceRepo
+https://github.com/contoso/intune-templates.git` is enough.
 
 ## Reviewing and replaying a dry run
 
@@ -358,10 +442,17 @@ assumed. Unattended runs (scheduled tasks, CI) skip the prompt since nobody is
 there to answer it, but still log the account and tenant.
 
 Scopes are requested per run: `DeviceManagementConfiguration.ReadWrite.All` and
-`DeviceManagementScripts.ReadWrite.All` always, plus `GroupMember.Read.All` only
-when a script names a group by display name. If the tenant grants fewer scopes
-than were asked for, the run stops right there with the missing ones named,
-rather than failing later on a confusing `403`.
+`DeviceManagementScripts.ReadWrite.All` always, plus `GroupMember.Read.All` when
+a script names a group by display name. If the tenant grants fewer scopes than
+were asked for, the run stops right there with the missing ones named, rather
+than failing later on a confusing `403`.
+
+A `-Backup`/`-BackupAll` run (unless `-NoTemplates` is passed) also requests
+`GroupMember.Read.All`, but as *optional* rather than required - it's what
+turns a group id back into a display name for the exported template (see
+"Exporting templates"). Unlike the required scopes above, a tenant declining
+it doesn't fail sign-in or the run at all; the export just falls back to bare
+GUIDs for any group reference, with a warning per group affected.
 
 ## Usage
 
@@ -387,9 +478,13 @@ rather than failing later on a confusing `403`.
 # Resolve near-duplicates without prompting (for scheduled/unattended runs):
 ./Deploy-IntuneScripts.ps1 -OnFuzzyMatch Skip
 
-# Back up one script, or the whole tenant, without deploying anything:
+# Back up one script, or the whole tenant, without deploying anything
+# (also exports a .ps1 template for each - see "Exporting templates"):
 ./Deploy-IntuneScripts.ps1 -Backup "Payroll Script"
 ./Deploy-IntuneScripts.ps1 -BackupAll
+
+# Same, but skip the template export:
+./Deploy-IntuneScripts.ps1 -BackupAll -NoTemplates
 
 # Pull scripts from a repo too, and save/replay a reviewed plan:
 ./Deploy-IntuneScripts.ps1 -SourceRepo https://github.com/contoso/intune-scripts.git
@@ -409,6 +504,7 @@ rather than failing later on a confusing `403`.
 | `-SkipAssignments` | With `-Restore`: restore content only, leave assignments as they are |
 | `-Backup <name\|id>` | Back up one existing script on demand, no deploy |
 | `-BackupAll` | Back up every script currently in the tenant |
+| `-NoTemplates` | With `-Backup`/`-BackupAll`: skip the `.ps1` template export |
 | `-ListBackups` | List available backups and exit |
 | `-SourceRepo <url[#ref][::subpath]>` | Also pull scripts from a git repo (repeatable) |
 | `-SavePlan <file>` | With `-DryRun`: save the exact plan to replay later |

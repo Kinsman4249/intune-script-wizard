@@ -67,6 +67,20 @@ function Invoke-MgGraphRequest {
         return @{ value = @($found | ForEach-Object { @{ id = $_['id']; displayName = $_['displayName'] } }) }
     }
 
+    if ($Method -eq 'GET' -and $Uri -match '^/v1\.0/groups/(?<id>[^/?]+)') {
+        $id = $Matches['id']
+        # denyScopes models a tenant that never granted GroupMember.Read.All:
+        # a per-call 403, the same shape a real reverse lookup would get back.
+        if (@($state['denyScopes']) -contains 'GroupMember.Read.All') {
+            throw 'Response status code does not indicate success: 403 (Forbidden).'
+        }
+        $found = @($state['groups'] | Where-Object { $_['id'] -eq $id })
+        if ($found.Count -eq 0) {
+            throw "Response status code does not indicate success: 404 (Not Found). Resource '$id' does not exist."
+        }
+        return @{ id = $found[0]['id']; displayName = $found[0]['displayName'] }
+    }
+
     if ($Method -eq 'GET' -and $Uri -match '/deviceManagementScripts/([^/]+)/assignments$') {
         $id = $Matches[1]
         $script = $state['scripts'] | Where-Object { $_['id'] -eq $id }

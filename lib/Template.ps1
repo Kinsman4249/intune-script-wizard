@@ -364,6 +364,21 @@ function Show-WizardTemplateDiff {
     }
 }
 
+# Strips the "# Exported from tenant ... on <timestamp> ..." line that
+# New-WizardTemplateHeader stamps fresh on every export, before an
+# unchanged-content comparison. Without this, that line alone (never
+# byte-identical between two separate runs, no matter how close together)
+# would make Resolve-WizardTemplateConflict's equality check fail every
+# single time, defeating the "Unchanged" path it exists for - see the
+# comment on that check below.
+function Get-WizardTemplateComparisonBytes {
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+
+    $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+    $lines = @($text -split "`r?`n" | Where-Object { $_ -notmatch '^# Exported from tenant .* on .* by intune-script-wizard ' })
+    return [System.Text.Encoding]::UTF8.GetBytes($lines -join "`n")
+}
+
 # Decides what to do about a template file that already exists on disk.
 # Returns 'Write', 'Unchanged', or 'Skip'. Order matters as much as the
 # prompt text - see handoff.md 4.7 for why each check comes before the next.
@@ -377,7 +392,7 @@ function Resolve-WizardTemplateConflict {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 'Write' }
 
     $existing = [System.IO.File]::ReadAllBytes($Path)
-    if (Test-WizardBytesEqual -A $existing -B $NewBytes) {
+    if (Test-WizardBytesEqual -A (Get-WizardTemplateComparisonBytes -Bytes $existing) -B (Get-WizardTemplateComparisonBytes -Bytes $NewBytes)) {
         # Without this, every -BackupAll would prompt once per script,
         # forever - most runs touch nothing that changed since the last one.
         $State.Unchanged++
