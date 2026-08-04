@@ -1,5 +1,10 @@
 # Runtime state - contains snapshots of deployed script content, keep local only.
 backups/
+# Exported tenant templates - holds tenant script content and group display
+# names (same reason as backups/ above), and becomes its own git repo once
+# template pushing is configured, so a nested repo tracked by the outer one
+# would fight it for the same files (see lib/RepoBackup.ps1's Sync-WizardRepoBackupDir).
+templates/
 .intune-script-cache.json
 logs/
 .repo-sources/

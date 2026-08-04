@@ -34,7 +34,13 @@ function Backup-WizardScript {
         # restore time, $Id no longer exists and a brand-new script has to be
         # created for it instead of updating in place.
         [string]$ReplacementDisplayName,
-        [string]$ReplacementContentHash
+        [string]$ReplacementContentHash,
+        # When given, also exports a .ps1 template for this script (see
+        # Template.ps1). Both must be supplied together; deploy-triggered
+        # backups deliberately never pass these - see handoff.md stage 6 step 1
+        # for why exporting there would write the pre-change version.
+        [string]$TemplateRoot,
+        $TemplateState
     )
 
     # try/catch runs the risky code in try{}; if it throws, catch{} handles the
@@ -139,6 +145,18 @@ function Backup-WizardScript {
     }
     Write-Host "  Backed up existing '$($full.DisplayName)' -> $path" -ForegroundColor DarkGray
     Write-WizardDebug "Backup wrote $($assignments.Count) assignment(s), $(@($full.RoleScopeTagIds).Count) scope tag(s)"
+
+    if ($TemplateRoot) {
+        # A template failure must never fail the backup that's the actual
+        # safety net - see handoff.md stage 6 step 1.
+        try {
+            Export-WizardScriptTemplate -Script $full -Assignments $assignments -TemplateRoot $TemplateRoot -State $TemplateState | Out-Null
+        } catch {
+            $TemplateState.Failed++
+            Write-Warning "Backup of '$($full.DisplayName)' succeeded, but exporting its template failed: $($_.Exception.Message)."
+        }
+    }
+
     return $path
 }
 

@@ -91,12 +91,24 @@
 .PARAMETER Backup
     Back up one existing Intune script by display name or Id, without scanning
     -Path or deploying anything. Writes the same snapshot Update-WizardScript
-    would take before an update, into -Path/backups. Combine with -DryRun to
-    see which script would be backed up without writing the file.
+    would take before an update, into -Path/backups, and also exports a .ps1
+    template of it into -Path/templates unless -NoTemplates is given. Combine
+    with -DryRun to see which script would be backed up without writing the
+    file.
 
 .PARAMETER BackupAll
     Back up every script currently in the tenant, one file each under
-    -Path/backups. Takes no value; -Backup is ignored if also passed.
+    -Path/backups (and, unless -NoTemplates is given, one template each under
+    -Path/templates - see -NoTemplates). Takes no value; -Backup is ignored if
+    also passed.
+
+.PARAMETER NoTemplates
+    Skip exporting .ps1 templates during -Backup/-BackupAll; only the JSON
+    backups are written. Export is on by default because it's part of what
+    -Backup/-BackupAll do, not a separate opt-in - use this switch if you only
+    want the JSON safety net and would rather not pay for the group lookups
+    (which optionally request GroupMember.Read.All) or the extra consent
+    prompt that comes with them. Only valid with -Backup/-BackupAll.
 
 .PARAMETER ListBackups
     List available backup files under -Path/backups and exit.
@@ -152,6 +164,7 @@ param(
     [switch]$SkipAssignments,
     [string]$Backup,
     [switch]$BackupAll,
+    [switch]$NoTemplates,
     [switch]$ListBackups,
     [ValidateSet('None', 'Console', 'File', 'Both')]
     [string]$DebugLog = 'None',
@@ -502,6 +515,7 @@ function Invoke-WizardRun {
     Write-WizardDebug "Path=$resolvedPath DryRun=$DryRun OnFuzzyMatch=$OnFuzzyMatch AllowTypeOverride=$AllowTypeOverride StopOnError=$StopOnError"
 
     $backupDir = Join-Path $resolvedPath 'backups'
+    $templateDir = Join-Path $resolvedPath 'templates'
     $cachePath = Join-Path $resolvedPath '.intune-script-cache.json'
 
     if ($ListBackups) {
@@ -531,6 +545,9 @@ function Invoke-WizardRun {
     }
     if ($Backup -and $BackupAll) {
         throw "-Backup and -BackupAll are mutually exclusive: -Backup backs up one script by name or Id, -BackupAll backs up every script in the tenant."
+    }
+    if ($NoTemplates -and -not ($Backup -or $BackupAll)) {
+        throw "-NoTemplates only applies to -Backup/-BackupAll. Add one of those, or drop the switch."
     }
     if (($Backup -or $BackupAll) -and $Restore) {
         throw "-Backup/-BackupAll cannot be combined with -Restore. Run them separately."
@@ -562,8 +579,20 @@ function Invoke-WizardRun {
     if ($Backup -or $BackupAll) {
         # Standalone backup: reads the tenant and writes local snapshot(s),
         # same as Update-WizardScript takes before an update - but on demand,
-        # with no local -Path scan and nothing pushed to Intune.
-        Connect-WizardGraph
+        # with no local -Path scan and nothing pushed to Intune. Also exports
+        # a .ps1 template per script (see lib/Template.ps1) unless
+        # -NoTemplates was given.
+        $templateState = $null
+        if ($NoTemplates) {
+            Connect-WizardGraph
+        } else {
+            # GroupMember.Read.All is optional here: declined, it degrades to
+            # bare GUIDs in the exported templates rather than failing sign-in.
+            Connect-WizardGraph -OptionalScopes @($script:GroupReadScope)
+            $templateState = New-WizardTemplateRunState
+            $templateState.GroupScopeOk = Test-WizardGroupScopeGranted
+        }
+
         $targets = @(Resolve-WizardBackupTargets -NameOrId $Backup -All:$BackupAll)
         if ($targets.Count -eq 0) {
             Write-Host "No scripts found in this tenant to back up."
@@ -573,6 +602,13 @@ function Invoke-WizardRun {
         if ($DryRun) {
             Write-Host "Would back up $($targets.Count) script(s):"
             foreach ($target in $targets) { Write-Host "  $($target.DisplayName) ($($target.Id))" }
+            if (-not $NoTemplates) {
+                # Resolve-WizardBackupTargets only reads id/displayName, so
+                # which targets are user/ vs device/ isn't known without the
+                # full per-script read - print the root and count rather than
+                # pretending to list paths that aren't known yet.
+                Write-Host "Would also export $($targets.Count) template(s) to $templateDir"
+            }
             return $script:WizardExitOk
         }
 
@@ -580,7 +616,12 @@ function Invoke-WizardRun {
         $backupFailures = @()
         foreach ($target in $targets) {
             try {
-                Backup-WizardScript -Id $target.Id -BackupDir $backupDir | Out-Null
+                if ($NoTemplates) {
+                    Backup-WizardScript -Id $target.Id -BackupDir $backupDir | Out-Null
+                } else {
+                    Backup-WizardScript -Id $target.Id -BackupDir $backupDir `
+                        -TemplateRoot $templateDir -TemplateState $templateState | Out-Null
+                }
             } catch {
                 # One script's failure says nothing about the next one's, so the
                 # run keeps going and reports everything at the end - same as
@@ -592,7 +633,17 @@ function Invoke-WizardRun {
 
         Write-Host ""
         $backedUpCount = $targets.Count - $backupFailures.Count
-        if ($backedUpCount -gt 0) { Push-WizardBackupsToRepo -BackupDir $backupDir }
+        if ($backedUpCount -gt 0) {
+            Push-WizardBackupsToRepo -BackupDir $backupDir
+            if (-not $NoTemplates) {
+                Write-WizardTemplateSummary -State $templateState -TemplateRoot $templateDir
+                Push-WizardTemplatesToRepo -TemplateDir $templateDir
+            }
+        }
+        # Template failures warn (see Backup-WizardScript) and never change
+        # this exit code - the JSON backup is the safety net and it already
+        # succeeded; failing a -BackupAll because one group was deleted is
+        # the wrong trade.
         if ($backupFailures.Count -gt 0) {
             Write-Host "$backedUpCount backed up, $($backupFailures.Count) failed" -ForegroundColor Yellow
             Write-Host "Failed:" -ForegroundColor Red

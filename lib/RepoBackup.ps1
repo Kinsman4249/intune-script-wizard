@@ -18,17 +18,48 @@
 # https://learn.microsoft.com/azure/devops/integrate/get-started/authentication/entra
 $script:WizardAzDevOpsResourceId = '499b84ac-1321-427f-aa17-267ca6975798'
 
+# Per-target strings for the two independent repo-push destinations this file
+# supports. A third target later is a table entry here rather than
+# if-statements scattered through every function below.
+function Get-WizardRepoKindInfo {
+    param([ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups')
+
+    switch ($Kind) {
+        'Templates' {
+            return @{
+                ConfigFile   = 'repo-template-config.json'
+                Noun         = 'templates'
+                SetupPrompt  = 'Also push exported templates to a remote git repo? (y/N)'
+                UrlPrompt    = 'Repo URL to push templates to (e.g. https://github.com/you/templates.git)'
+                CommitPrefix = 'Templates'
+            }
+        }
+        default {
+            return @{
+                ConfigFile   = 'repo-backup-config.json'
+                Noun         = 'backups'
+                SetupPrompt  = 'Also back up these backup files to a remote git repo? (y/N)'
+                UrlPrompt    = 'Repo URL to push backups to (e.g. https://github.com/you/backups.git)'
+                CommitPrefix = 'Backup'
+            }
+        }
+    }
+}
+
 # Where the repo-backup settings (which provider, which remote, or that the
 # user said no) are remembered between runs. Same folder Telemetry.ps1 uses
 # for its own local state, same reason: %APPDATA% on Windows, a dotfile under
-# HOME everywhere else.
+# HOME everywhere else. Backups and Templates are two independent config
+# files in that same folder, so declining one never silences the other.
 function Get-WizardRepoBackupConfigPath {
+    param([ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups')
+
     if ($IsWindows -and $env:APPDATA) {
         $dir = Join-Path $env:APPDATA 'IntuneScriptWizard'
     } else {
         $dir = Join-Path $HOME '.intune-script-wizard'
     }
-    return (Join-Path $dir 'repo-backup-config.json')
+    return (Join-Path $dir (Get-WizardRepoKindInfo -Kind $Kind).ConfigFile)
 }
 
 # Returns $null when nothing has been configured yet (including "the file
@@ -36,19 +67,24 @@ function Get-WizardRepoBackupConfigPath {
 # first-run setup, so a freshly-installed wizard and a genuinely declined one
 # must not look the same.
 function Get-WizardRepoBackupConfig {
-    $path = Get-WizardRepoBackupConfigPath
+    param([ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups')
+
+    $path = Get-WizardRepoBackupConfigPath -Kind $Kind
     try {
         return (Read-WizardJsonFile -Path $path -AsHashtable)
     } catch {
-        Write-WizardDebug "Could not read repo backup config, treating as unconfigured: $($_.Exception.Message)"
+        Write-WizardDebug "Could not read repo $Kind config, treating as unconfigured: $($_.Exception.Message)"
         return $null
     }
 }
 
 function Save-WizardRepoBackupConfig {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups'
+    )
 
-    $path = Get-WizardRepoBackupConfigPath
+    $path = Get-WizardRepoBackupConfigPath -Kind $Kind
     $dir = Split-Path -Parent $path
     if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
@@ -198,32 +234,54 @@ function Request-WizardAzDevOpsAuthChoice {
     return 'azdevops-pat'
 }
 
-# Offers, once, to push the wizard's local backups to a remote repo too.
-# Only ever called when no repo-backup-config.json exists yet; whatever the
-# answer is (including "no") gets remembered so this never asks twice.
+# Offers, once, to push the wizard's local backups (or templates) to a
+# remote repo too. Only ever called when no config for this $Kind exists
+# yet; whatever the answer is (including "no") gets remembered so this never
+# asks twice - independently per $Kind, so declining templates never
+# silences an already-configured backups push and vice versa.
 function Request-WizardRepoBackupSetup {
+    param([ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups')
+
     if (-not (Test-WizardInteractive)) {
-        Write-WizardDebug "Skipping repo backup setup prompt: session is not interactive."
+        Write-WizardDebug "Skipping repo $Kind setup prompt: session is not interactive."
         return
     }
+
+    $info = Get-WizardRepoKindInfo -Kind $Kind
 
     Write-Host ""
-    $answer = Read-Host "Also back up these backup files to a remote git repo? (y/N)"
+    $answer = Read-Host $info.SetupPrompt
     if ($answer -notmatch '^y(es)?$') {
-        Save-WizardRepoBackupConfig -Config @{ Declined = $true; ConfiguredAt = (Get-Date).ToString('o') }
-        Write-Host "  Not asking again. Delete '$(Get-WizardRepoBackupConfigPath)' if you change your mind." -ForegroundColor DarkGray
+        Save-WizardRepoBackupConfig -Kind $Kind -Config @{ Declined = $true; ConfiguredAt = (Get-Date).ToString('o') }
+        Write-Host "  Not asking again. Delete '$(Get-WizardRepoBackupConfigPath -Kind $Kind)' if you change your mind." -ForegroundColor DarkGray
         return
     }
 
-    $remoteUrl = Read-Host "Repo URL to push backups to (e.g. https://github.com/you/backups.git)"
+    $remoteUrl = Read-Host $info.UrlPrompt
     if ([string]::IsNullOrWhiteSpace($remoteUrl)) {
-        Write-Host "  No URL entered; skipping repo backup setup." -ForegroundColor Yellow
+        Write-Host "  No URL entered; skipping repo $($info.Noun) setup." -ForegroundColor Yellow
         return
+    }
+
+    # backups/.git and templates/.git are two unrelated repos with disjoint
+    # histories. Pointed at the same remote branch, each push rejects the
+    # other's history - so the second one configured must be told and must
+    # opt in explicitly rather than silently fighting the first.
+    if ($Kind -eq 'Templates') {
+        $backupsConfig = Get-WizardRepoBackupConfig -Kind Backups
+        if ($backupsConfig -and -not $backupsConfig['Declined'] -and $backupsConfig['RemoteUrl'] -eq $remoteUrl) {
+            Write-Warning "This is the same remote URL already configured for backups ($remoteUrl). backups/ and templates/ are two independent git repos with unrelated histories - pushing both to the same remote branch means each push rejects the other's history."
+            $confirm = Read-Host "Use it anyway? (y/N)"
+            if ($confirm -notmatch '^y(es)?$') {
+                Write-Host "  Not configuring the templates repo push." -ForegroundColor DarkGray
+                return
+            }
+        }
     }
 
     $hasGit = Test-WizardCommandAvailable -Name 'git'
     if (-not $hasGit) {
-        Write-Warning "git is not installed/on PATH; it's required to push backups (the gh and az paths still push over git underneath). Install git and re-run a backup to set this up."
+        Write-Warning "git is not installed/on PATH; it's required to push $($info.Noun) (the gh and az paths still push over git underneath). Install git and re-run a backup to set this up."
         return
     }
     $isAzureDevOps = $remoteUrl -match '(?i)dev\.azure\.com|\.visualstudio\.com'
@@ -247,107 +305,122 @@ function Request-WizardRepoBackupSetup {
             $provider = 'git'
         }
     } catch {
-        Write-Warning "Could not finish setting up repo backup auth: $($_.Exception.Message). Nothing was saved; the next backup will offer this again."
+        Write-Warning "Could not finish setting up repo $($info.Noun) auth: $($_.Exception.Message). Nothing was saved; the next backup will offer this again."
         return
     }
 
-    Save-WizardRepoBackupConfig -Config @{
+    Save-WizardRepoBackupConfig -Kind $Kind -Config @{
         Provider     = $provider
         RemoteUrl    = $remoteUrl
         Declined     = $false
         ConfiguredAt = (Get-Date).ToString('o')
     }
-    Write-Host "  Repo backup configured ($provider -> $remoteUrl). Future backups will be pushed automatically." -ForegroundColor Green
+    Write-Host "  Repo backup configured ($provider -> $remoteUrl). Future $($info.Noun) will be pushed automatically." -ForegroundColor Green
 }
 
-# Commits and pushes whatever is currently in $BackupDir to the configured
-# remote. A fresh $BackupDir becomes its own git repo the first time this
-# runs (backups/ is already gitignored by the wizard's own repo, so this
+# Commits and pushes whatever is currently in $Dir to the configured remote.
+# A fresh $Dir becomes its own git repo the first time this runs (backups/
+# and templates/ are already gitignored by the wizard's own repo, so this
 # nested repo does not fight it for the same files).
 function Sync-WizardRepoBackupDir {
     param(
-        [Parameter(Mandatory)][string]$BackupDir,
-        [Parameter(Mandatory)][hashtable]$Config
+        [Parameter(Mandatory)][string]$Dir,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups'
     )
+
+    $info = Get-WizardRepoKindInfo -Kind $Kind
 
     $isRepo = $false
     try {
         Invoke-WizardExternalCommand -FilePath 'git' `
-            -ArgumentList @('-C', $BackupDir, 'rev-parse', '--is-inside-work-tree') `
-            -What "Checking for a git repo in $BackupDir" | Out-Null
+            -ArgumentList @('-C', $Dir, 'rev-parse', '--is-inside-work-tree') `
+            -What "Checking for a git repo in $Dir" | Out-Null
         $isRepo = $true
     } catch {
         $isRepo = $false
     }
 
     if (-not $isRepo) {
-        Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @('-C', $BackupDir, 'init') `
-            -What "Initialising a git repo in $BackupDir" | Out-Null
+        Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @('-C', $Dir, 'init') `
+            -What "Initialising a git repo in $Dir" | Out-Null
         Invoke-WizardExternalCommand -FilePath 'git' `
-            -ArgumentList @('-C', $BackupDir, 'remote', 'add', 'origin', $Config['RemoteUrl']) `
-            -What "Adding the remote in $BackupDir" | Out-Null
+            -ArgumentList @('-C', $Dir, 'remote', 'add', 'origin', $Config['RemoteUrl']) `
+            -What "Adding the remote in $Dir" | Out-Null
     }
 
-    Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @('-C', $BackupDir, 'add', '-A') `
-        -What "Staging backups in $BackupDir" | Out-Null
+    Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @('-C', $Dir, 'add', '-A') `
+        -What "Staging $($info.Noun) in $Dir" | Out-Null
 
     # 'git diff --cached --quiet' exits 1 when there ARE staged changes and 0
     # when there are none - the opposite of every other git exit-code
     # convention used here, so this is checked directly rather than through
     # Invoke-WizardExternalCommand (which treats any non-zero as a failure).
     $global:LASTEXITCODE = 0
-    & git -C $BackupDir diff --cached --quiet 2>$null
+    & git -C $Dir diff --cached --quiet 2>$null
     $hasChanges = ($LASTEXITCODE -ne 0)
     if (-not $hasChanges) {
-        Write-WizardDebug "Repo backup: nothing new to push in $BackupDir"
+        Write-WizardDebug "Repo $Kind`: nothing new to push in $Dir"
         return
     }
 
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     Invoke-WizardExternalCommand -FilePath 'git' `
-        -ArgumentList @('-C', $BackupDir, 'commit', '-m', "Backup $stamp") `
-        -What "Committing backups in $BackupDir" | Out-Null
+        -ArgumentList @('-C', $Dir, 'commit', '-m', "$($info.CommitPrefix) $stamp") `
+        -What "Committing $($info.Noun) in $Dir" | Out-Null
 
     $branch = (Invoke-WizardExternalCommand -FilePath 'git' `
-        -ArgumentList @('-C', $BackupDir, 'branch', '--show-current') `
-        -What "Reading the current branch in $BackupDir")
+        -ArgumentList @('-C', $Dir, 'branch', '--show-current') `
+        -What "Reading the current branch in $Dir")
     if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'main' }
 
     if ($Config['Provider'] -eq 'azdevops-entra') {
         $token = Get-WizardAzDevOpsAccessToken
         Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @(
-            '-C', $BackupDir, '-c', "http.extraheader=AUTHORIZATION: bearer $token",
+            '-C', $Dir, '-c', "http.extraheader=AUTHORIZATION: bearer $token",
             'push', '-u', 'origin', $branch
-        ) -What "Pushing backups to $($Config['RemoteUrl'])" | Out-Null
+        ) -What "Pushing $($info.Noun) to $($Config['RemoteUrl'])" | Out-Null
     } else {
         Invoke-WizardExternalCommand -FilePath 'git' `
-            -ArgumentList @('-C', $BackupDir, 'push', '-u', 'origin', $branch) `
-            -What "Pushing backups to $($Config['RemoteUrl'])" | Out-Null
+            -ArgumentList @('-C', $Dir, 'push', '-u', 'origin', $branch) `
+            -What "Pushing $($info.Noun) to $($Config['RemoteUrl'])" | Out-Null
     }
 
-    Write-Host "  Pushed backups to $($Config['RemoteUrl'])" -ForegroundColor DarkGray
+    Write-Host "  Pushed $($info.Noun) to $($Config['RemoteUrl'])" -ForegroundColor DarkGray
 }
 
-# Called after a run has written new backups locally. Pushes them to a
-# configured remote repo, or - the very first time this ever runs - offers to
-# set that up. A push failure here is reported as a warning, never a run
-# failure: the local backup already exists and is the thing restores
-# actually depend on.
+# Called after a run has written new backups (or templates) locally. Pushes
+# them to a configured remote repo, or - the very first time this $Kind ever
+# runs - offers to set that up. A push failure here is reported as a
+# warning, never a run failure: the local copy already exists and is the
+# thing restores (or promotion) actually depend on.
 function Push-WizardBackupsToRepo {
-    param([Parameter(Mandatory)][string]$BackupDir)
+    param(
+        [Parameter(Mandatory)][string]$BackupDir,
+        [ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups'
+    )
 
     if (-not (Test-Path -LiteralPath $BackupDir)) { return }
 
-    $config = Get-WizardRepoBackupConfig
+    $config = Get-WizardRepoBackupConfig -Kind $Kind
     if (-not $config) {
-        Request-WizardRepoBackupSetup
-        $config = Get-WizardRepoBackupConfig
+        Request-WizardRepoBackupSetup -Kind $Kind
+        $config = Get-WizardRepoBackupConfig -Kind $Kind
     }
     if (-not $config -or $config['Declined']) { return }
 
     try {
-        Sync-WizardRepoBackupDir -BackupDir $BackupDir -Config $config
+        Sync-WizardRepoBackupDir -Dir $BackupDir -Config $config -Kind $Kind
     } catch {
-        Write-Warning "Backups were saved locally but could not be pushed to the configured repo: $($_.Exception.Message). Local copies are safe at '$BackupDir'; this will retry on the next backup."
+        $noun = (Get-WizardRepoKindInfo -Kind $Kind).Noun
+        Write-Warning "Local $noun are safe at '$BackupDir', but the push to the configured repo failed: $($_.Exception.Message). This will retry on the next backup."
     }
+}
+
+# Thin wrapper so the stage-6 call site in Deploy-IntuneScripts.ps1 reads
+# honestly as "push the templates" rather than reusing the backups verb.
+function Push-WizardTemplatesToRepo {
+    param([Parameter(Mandatory)][string]$TemplateDir)
+
+    Push-WizardBackupsToRepo -BackupDir $TemplateDir -Kind Templates
 }
