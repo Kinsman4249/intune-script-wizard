@@ -57,6 +57,9 @@ $repo = Split-Path -Parent $here
 . (Join-Path $repo 'lib/Prereqs.ps1')
 . (Join-Path $repo 'lib/Parsing.ps1')
 . (Join-Path $repo 'lib/Matching.ps1')
+. (Join-Path $repo 'lib/GraphCore.ps1')
+. (Join-Path $repo 'lib/GraphAuth.ps1')
+. (Join-Path $repo 'lib/Assignments.ps1')
 . (Join-Path $repo 'lib/GraphOps.ps1')
 
 if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
