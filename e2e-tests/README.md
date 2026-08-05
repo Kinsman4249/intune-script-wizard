@@ -27,6 +27,8 @@ stubs cannot honestly stand in for.
 | Anything at all | The offline suite: `pwsh tests/Invoke-WizardTests.ps1` |
 | Script content, encoding, or upload (`New-`/`Update-MgBetaDeviceManagementScript`, `-ScriptContentInputFile`, hashing) | `Test-E2EDeployedSet.ps1` - only a real tenant round-trip proves the bytes survived |
 | Backup or restore (`lib/Backup.ps1`, the backup schema, `-Restore`/`-RestoreAll`) | `Test-E2EBackupRestore.ps1` |
+| Template export, repo push, or `-SourceRepo` - regression coverage, throwaway scripts | `Test-E2ERepoBackupRestore.ps1` |
+| Template export, repo push, or `-SourceRepo` - a real rehearsal against the tenant's actual scripts, e.g. before telling anyone this is production-ready | `Test-E2ETenantWideRepoBackupRestore.ps1` |
 | Assignments, group resolution, `#group:`/`#excludegroup:`/`#noassignments` | Deploy `generated/main` + `Test-E2EDeployedSet.ps1` (real group ids, real targets) |
 | Meta-comment parsing, `#type:`/`#typeoverride:`, folder precedence | The full generate/deploy/verify cycle below |
 | Graph scopes, sign-in, consent | The full cycle - scope failures only surface against a real tenant |
@@ -196,6 +198,90 @@ tenant once, up front; the wizard runs it drives are non-interactive.
 
 Exit code is `0` when every check passed, `1` otherwise, so it can be wired into
 a pipeline against a dev tenant.
+
+## Repo backup/restore check
+
+**When:** any change to `lib/Template.ps1`'s .ps1 export, `lib/RepoBackup.ps1`'s
+push, or `lib/RepoSource.ps1`'s `-SourceRepo` pull - and once before every
+release if you use the repo-push feature at all. Needs a real remote repo
+(GitHub or Azure DevOps) in addition to a dev tenant, and takes a couple of
+minutes.
+
+```
+pwsh e2e-tests/Test-E2ERepoBackupRestore.ps1
+```
+
+This is the repo-facing sibling of the backup/restore check above, and
+covers what that one does not: the .ps1 template export (not the JSON
+backup), pushing it to a remote git repo, and pulling it back with
+`-SourceRepo` instead of `-Restore`. Against the tenant and the remote it:
+
+- deploys two throwaway `#noassignments` scripts (one `user/`, one
+  `device/`), each with its own directives and hand-written comments
+- makes sure a Templates repo push is configured, walking through the real
+  first-run prompt itself if it isn't yet (answer `y`, paste the repo URL,
+  complete whichever auth prompt follows - this only happens once; later
+  runs reuse the saved config)
+- backs up each script by name, which exports a regenerated template and
+  pushes `templates/` to the remote
+- clones that remote independently and checks the pushed files are
+  byte-identical to what's on disk, **before** touching the tenant - a
+  broken push aborts here with both scripts still in place
+- deletes both scripts from the tenant
+- restores them with `-SourceRepo` pointed at the same remote, into an
+  otherwise-empty `-Path` so nothing local can paper over a broken pull
+- checks the restored tenant content carries the wizard's regenerated
+  template header, that `EnforceSignatureCheck`/`RunAs32Bit` match what the
+  original directives asked for, and that the script logic matches before
+  and after once comments and blank lines are stripped from both sides
+
+Restored tenant content is also written to
+`generated-repo-backup-restore/restored-tenant-content/` so the header
+insertion can be read by eye, not just asserted. Pass `-KeepArtifacts` to
+leave the tenant scripts and scratch folder behind for inspection - the
+remote repo itself is never cleaned up by this script either way; each run
+adds one more commit to it.
+
+Exit code is `0` when every check passed, `1` otherwise.
+
+## Tenant-wide repo backup/restore check
+
+**When:** you want to prove the repo backup/restore path works against real,
+arbitrary tenant content, not scripts this kit made up for the occasion - e.g.
+before telling someone this is safe to rely on. Unlike everything else in this
+folder, it does not create its own throwaway scripts: it operates on every
+script already in the tenant.
+
+```
+pwsh e2e-tests/Test-E2ETenantWideRepoBackupRestore.ps1
+```
+
+It backs up every script in the tenant (JSON + .ps1 template), pushes the
+templates to the configured remote and independently verifies the push landed
+- all before touching anything. Then it prints the full list of scripts about
+to be deleted and requires typing an exact confirmation phrase (not `y`/`N`)
+before deleting every one of them and restoring all of them back with
+`-SourceRepo`. Each restored script is compared against its pre-delete JSON
+backup: content logic (comments and blank lines stripped from both sides),
+`EnforceSignatureCheck`/`RunAs32Bit`/`RunAsAccount`, and assignments. A script
+whose only assignment was "all devices" or "all licensed users" is reported as
+a known limitation rather than a failure - `#group:`/`#excludegroup:` cannot
+express either one, so a repo-based restore cannot bring it back; that gap
+exists in the tool, not in this check.
+
+Pass `-StopBeforeDelete` to run only the backup/push/verify steps and stop -
+useful for rehearsing safely before committing to the real delete.
+
+Unlike the rest of this kit, this script does **not** clean anything up
+afterward: the restored scripts are meant to be the real end state, not
+artifacts to tear down, and the workspace (`tenant-wide-repo-backup-restore/`
+next to this script by default) is left in place because it holds the only
+local copy of the pre-delete JSON backups. It writes `report.md` in that same
+folder - a markdown table of every script and its result, meant to be handed
+to someone who wasn't in the room.
+
+Exit code is `0` when every check passed (or when `-StopBeforeDelete` stopped
+cleanly, or the delete confirmation was declined), `1` otherwise.
 
 ## Cleaning up (step 6)
 
