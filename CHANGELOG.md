@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-08-06
+
+### Fixed
+
+Fixed e2e test robustness when verifying remote pushes to a configured subpath. When a subpath is pushed for the first time and is empty, git does not commit the empty folder, so a fresh verification clone lacks the folder even though the push succeeded. Added an opt-in `-CreateSubPathIfMissing` switch to `Sync-WizardRepoSource` so verification clones can create missing subpaths instead of throwing (real `-SourceRepo` pulls keep throwing on missing paths, since a missing subpath there is usually a typo). E2e test harnesses now capture all PowerShell output streams (`*>&1` instead of `2>&1`) so that `Push-WizardBackupsToRepo`'s Write-Warning messages about push failures are captured and visible. `Test-E2ETenantWideRepoBackupRestore.ps1` now surfaces push-failure warnings unconditionally during step 3, so a real push error is visible on screen before step 4's remote/local mismatch report, instead of only surfacing indirectly as an unexplained diff.
+
+Added documentation to README with a troubleshooting section for `az login` failing on Windows with "Can't find token from MSAL cache". The issue occurs because `az` defaults to signing in through Web Account Manager (WAM) on Windows, and in an embedded/integrated terminal, WAM's sign-in popup can open behind other windows, so `az login` reports success without ever finishing the token grant for Azure DevOps. Documented Microsoft's recommended workaround: disabling the broker (`az account clear`, `az config set core.enable_broker_on_windows=false`, then `az login`).
+
 ## [1.18.0] - 2026-08-06
 
 ### Added
