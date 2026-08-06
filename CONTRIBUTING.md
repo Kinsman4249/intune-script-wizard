@@ -20,7 +20,7 @@ Open an issue using the **Feature request** template. Describe the use case befo
 
 1. **Fork** the repo and create a feature branch (`git checkout -b feat/short-description`).
 2. **Make your change.** Keep changes focused - one logical change per PR.
-3. **Test it.** See the "Testing" section in the README for how to verify your change locally.
+3. **Test it.** See [docs/testing.md](docs/testing.md) for how to verify your change locally.
 4. **Lint it.** Run any project-specific linters or formatters before pushing.
 5. **Update documentation.** If your change alters user-visible behavior, update the README and any relevant docs (`docs/`, add a new numbered entry to `CHANGELOG.md` under the current round, etc.).
 6. **Open a PR** against `main`. Fill in the PR template.
@@ -30,7 +30,7 @@ Open an issue using the **Feature request** template. Describe the use case befo
 - Follow the style of the surrounding code. Match formatting, naming, and structure of existing files.
 - Comments should explain *why*, not *what*. The diff already shows what.
 - **No new dependencies** without strong justification - the appeal of small projects is the small, predictable surface area.
-- **Telemetry is opt-in crash reporting only, asked fresh each time.** See the "Telemetry" section in the README and [PRIVACY.md](PRIVACY.md). Don't add any telemetry that sends data without an explicit per-run prompt, and don't add telemetry to unattended/scheduled runs.
+- **Telemetry is opt-in crash reporting only, asked fresh each time.** See [docs/telemetry.md](docs/telemetry.md) and [PRIVACY.md](PRIVACY.md). Don't add any telemetry that sends data without an explicit per-run prompt, and don't add telemetry to unattended/scheduled runs.
 
 ## Commit messages
 

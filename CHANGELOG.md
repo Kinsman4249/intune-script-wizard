@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.18.2] - 2026-08-06
+
+### Changed
+
+Split the README into a short landing page plus nine topic docs under `docs/`
+(meta comments, backups/restore/templates, sourcing from git, dry runs and
+plans, setup, usage/flags, technical notes, testing, telemetry), cross-linked
+to each other and back to the README. `CONTRIBUTING.md`'s references to the
+old "Testing" and "Telemetry" README sections now point at
+`docs/testing.md` and `docs/telemetry.md`.
+
 ## [1.18.1] - 2026-08-06
 
 ### Fixed
