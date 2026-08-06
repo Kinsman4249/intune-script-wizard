@@ -479,6 +479,24 @@ benefits from them:
 Without either installed, the wizard falls back to asking for a personal
 access token instead - both CLIs are conveniences, not hard requirements.
 
+**`az login` failing with "Can't find token from MSAL cache" on Windows,
+even right after signing in:** `az` defaults to signing in through Web
+Account Manager (WAM), Windows' own auth broker. In an embedded/integrated
+terminal (VS Code and forks of it included), WAM's sign-in popup can open
+behind other windows, so `az login` reports success without ever finishing
+the token grant for Azure DevOps. Force the older browser-based flow
+instead:
+
+```powershell
+az account clear
+az config set core.enable_broker_on_windows=false
+az login
+```
+
+Source: [Sign into Azure interactively using the Azure CLI - Sign in with
+WAM on
+Windows](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-interactively?view=azure-cli-latest#sign-in-with-web-account-manager-wam-on-windows).
+
 ### Signing in
 
 Every run signs in fresh. Any Graph session already open in the PowerShell
