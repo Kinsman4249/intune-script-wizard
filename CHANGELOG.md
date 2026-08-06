@@ -1,5 +1,11 @@
 # Change history
 
+## [Unreleased]
+
+## [1.15.2] - 2026-08-06
+
+Improved e2e test diagnostics for the tenant-wide repo backup/restore test. Added explicit reporting of pre-existing/conflicting files under configured subpaths during the push step, which previously only surfaced via silent warnings. Enhanced mismatch detection to list specific files by their mismatched state (missing on remote, content differs, present on remote only), showing byte counts for content mismatches, so verification failures are traceable to their cause without requiring binary diffs. This makes debugging push issues in non-interactive sessions clearer.
+
 ### v1.15.1 (2026-08-06)
 
 Fixed a data-loss bug in the `::subpath` push flow introduced in v1.15.0. When pushing backups or templates into a configured subpath of an existing remote repo, the wizard previously deleted and replaced the entire target folder wholesale, destroying any files already present that it had not written itself (such as hand-added placeholders or content from other sources) without warning or user interaction. Now the wizard tracks which files it owns via a `SyncedFiles` list persisted in the repo config, and on each push, only modifies those files. Pre-existing content is left alone by default. When a file the wizard wants to write collides with something already present that the wizard does not own, the user is prompted in interactive mode (and the conflict is left untouched with a warning in non-interactive mode), never overwritten silently. Local deletions of wizard-owned files are still correctly propagated to the remote. Added regression tests covering both placeholder file survival and conflict detection in non-interactive sessions.
