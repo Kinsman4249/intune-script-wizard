@@ -2,9 +2,19 @@
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-08-06
+
+### Added
+
+Added `#assigndevices` and `#assignusers` meta comments that assign a script to the all-devices or all-licensed-users default target independent of the script's own `#type:`, on top of whatever `#group:`/`#assignall` already contribute. `Get-ScriptMetadata` (`lib/Parsing.ps1`) parses the two new directives and rejects them in combination with `#noassignments`, matching the existing `#group:`/`#excludegroup:`/`#assignall` rule.
+
+### Changed
+
+Added debug-log tracing to `Invoke-WizardGraphRetry` (`lib/GraphCore.ps1`) and to `Restore-WizardBackup`/`Invoke-WizardScopeTagFallback` (`lib/Restore.ps1`), recording each Graph call attempt (success, or failure with status code), the existence-check result that decides whether a restore updates or recreates a script, the resulting script id after either path, and when the role-scope-tag fallback fires. None of this reaches the console; it only appears when debug logging is enabled, and exists to make restore runs traceable from the log file alone when something needs investigating after the fact.
+
 ### Fixed
 
-Fixed template export collapsing a script assigned to BOTH the all-devices and all-licensed-users default targets into a single `#assignall`, which only ever encodes the default matching the script's own `#type:` - the tenant-wide e2e restore test caught this as `assignments differ` on 9 real scripts that had both targets independently of `#type:` (a normal Intune portal configuration). Added two new meta comments, `#assigndevices` and `#assignusers`, that add the *other* default target regardless of `#type:`/`#assignall`; `Get-WizardDesiredAssignments` (`lib/Assignments.ps1`) now builds the default-target set from a `HashSet` so `#assignall` and `#assigndevices`/`#assignusers` can't double up, `Get-ScriptMetadata` (`lib/Parsing.ps1`) parses the two new directives and rejects them alongside `#noassignments` like the existing directives, and `Export-WizardScriptTemplate` (`lib/Template.ps1`) now tracks each default target independently instead of collapsing both into one `$assignAll` flag, emitting `#assigndevices`/`#assignusers` whenever the tenant's live assignments include the non-`#type:`-matching default.
+Fixed template export collapsing a script assigned to BOTH the all-devices and all-licensed-users default targets into a single `#assignall`, which only ever encodes the default matching the script's own `#type:` - the tenant-wide e2e restore test caught this as `assignments differ` on 9 real scripts that had both targets independently of `#type:` (a normal Intune portal configuration). `Get-WizardDesiredAssignments` (`lib/Assignments.ps1`) now builds the default-target set from a `HashSet` so `#assignall` and `#assigndevices`/`#assignusers` can't double up, and `Export-WizardScriptTemplate` (`lib/Template.ps1`) now tracks each default target independently instead of collapsing both into one `$assignAll` flag, emitting `#assigndevices`/`#assignusers` whenever the tenant's live assignments include the non-`#type:`-matching default.
 
 ## [1.17.0] - 2026-08-06
 
