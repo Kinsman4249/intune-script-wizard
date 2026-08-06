@@ -256,6 +256,23 @@ try {
     $run = Invoke-Deploy -WizardArgs @('-Path', $WorkPath, '-BackupAll')
     Check '-BackupAll run exited 0' ($run.ExitCode -eq 0) $run.Output
 
+    # A pushed-but-conflicting file under the configured subpath (something
+    # already there that the wizard doesn't own from a previous push) is left
+    # untouched, not an error - Sync-WizardRepoBackupSubpath still exits 0.
+    # That means the warning below is silently swallowed by the Check above
+    # on the success path. Surface it unconditionally here so a mismatch in
+    # step 4 (same file, remote still has the pre-existing content) is
+    # traceable back to its cause instead of just showing up as a raw byte
+    # diff with no explanation.
+    $conflictLines = @($run.Output -split "`r?`n" | Where-Object {
+        $_ -match 'already has \d+ file\(s\) this wizard did not put there' -or
+        $_ -match 'Leaving \d+ pre-existing file'
+    })
+    if ($conflictLines.Count -gt 0) {
+        Write-Host "  Push reported pre-existing/conflicting file(s) under the configured subpath - these are NOT overwritten and will show up as mismatches in step 4:" -ForegroundColor Yellow
+        foreach ($line in $conflictLines) { Write-Host "    $line" -ForegroundColor Yellow }
+    }
+
     $backupDir = Join-Path $WorkPath 'backups'
     $backupFiles = @(Get-ChildItem -LiteralPath $backupDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
     Check "Backed up $($backupFiles.Count) of $($originalList.Count) script(s) to JSON" ($backupFiles.Count -eq $originalList.Count) `
@@ -302,16 +319,42 @@ try {
         foreach ($f in $clonedFiles) { $clonedByRelPath[$f.FullName.Substring($cloneScanRoot.Length).TrimStart('\', '/')] = $f }
 
         $mismatches = 0
+        $localRelPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $mismatchDetails = [System.Collections.Generic.List[string]]::new()
         foreach ($local in $localTemplateFiles) {
             $rel = $local.FullName.Substring($templateDir.Length).TrimStart('\', '/')
+            [void]$localRelPaths.Add($rel)
             $cloned = $clonedByRelPath[$rel]
-            if (-not $cloned) { $mismatches++; continue }
-            $equal = Test-WizardBytesEqual -A ([System.IO.File]::ReadAllBytes($local.FullName)) -B ([System.IO.File]::ReadAllBytes($cloned.FullName))
-            if (-not $equal) { $mismatches++ }
+            if (-not $cloned) {
+                $mismatches++
+                $mismatchDetails.Add("missing on remote: $rel")
+                continue
+            }
+            $localBytes = [System.IO.File]::ReadAllBytes($local.FullName)
+            $clonedBytes = [System.IO.File]::ReadAllBytes($cloned.FullName)
+            $equal = Test-WizardBytesEqual -A $localBytes -B $clonedBytes
+            if (-not $equal) {
+                $mismatches++
+                $mismatchDetails.Add("content differs: $rel (local $($localBytes.Length) bytes, remote $($clonedBytes.Length) bytes)")
+            }
+        }
+        # Files present on the remote clone that don't correspond to any
+        # locally-exported template - e.g. something a previous run (or
+        # someone else) left under the same subpath. clonedFiles.Count can
+        # equal localTemplateFiles.Count even while a mismatch exists, if one
+        # local file failed to land (see above) and one unrelated remote file
+        # happens to make up the difference; listing these explicitly avoids
+        # having to guess which is which from the counts alone.
+        $extraRemote = @($clonedByRelPath.Keys | Where-Object { -not $localRelPaths.Contains($_) })
+        foreach ($rel in $extraRemote) { $mismatchDetails.Add("present on remote only: $rel") }
+
+        $detail = "$mismatches mismatched/missing locally-pushed file(s); remote has $($clonedFiles.Count), local has $($localTemplateFiles.Count)"
+        if ($mismatchDetails.Count -gt 0) {
+            $detail += "`n" + (($mismatchDetails | ForEach-Object { "      - $_" }) -join "`n")
         }
         Check "All $($localTemplateFiles.Count) template file(s) verified byte-identical on the remote" `
-            ($mismatches -eq 0 -and $clonedFiles.Count -eq $localTemplateFiles.Count) `
-            "$mismatches mismatched/missing locally-pushed file(s); remote has $($clonedFiles.Count), local has $($localTemplateFiles.Count)"
+            ($mismatches -eq 0 -and $clonedFiles.Count -eq $localTemplateFiles.Count -and $extraRemote.Count -eq 0) `
+            $detail
     }
     if ($script:Failed -gt 0) {
         throw "Push verification failed; refusing to delete anything from the tenant. See the FAIL lines above. Fix the push, then re-run - nothing has been deleted yet."
