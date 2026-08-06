@@ -200,6 +200,7 @@ function Invoke-WizardScopeTagFallback {
         if (($RoleScopeTagIds -join ',') -eq '0') { throw }
 
         Write-Warning "$What was rejected over its role scope tags ($($RoleScopeTagIds -join ', ')): $(Get-WizardErrorSummary -ErrorRecord $_). Retrying with the built-in Default tag only - re-apply the original scope tags in the Intune portal if they still exist and you still need them."
+        Write-WizardDebug "$What : scope-tag fallback firing, resending with tags=0"
         return (& $Write @('0'))
     }
 }
@@ -269,6 +270,11 @@ function Restore-WizardBackup {
             }
             $exists = $null
         }
+        if ($exists) {
+            Write-WizardDebug "Existence check: $($backup['Id']) found, displayName='$($exists.DisplayName)', lastModifiedDateTime=$($exists.LastModifiedDateTime)"
+        } else {
+            Write-WizardDebug "Existence check: $($backup['Id']) not found"
+        }
 
         # Where-Object earns its place here: a backup written before scope tags
         # were captured at all (schema 1) has no RoleScopeTagIds key, and
@@ -302,6 +308,7 @@ function Restore-WizardBackup {
             } catch {
                 throw "Restoring '$($backup['DisplayName'])' over $($backup['Id']) failed: $(Get-WizardErrorSummary -ErrorRecord $_). The script is unchanged or partly changed; the backup file is intact and can be retried."
             }
+            Write-WizardDebug "Update-MgBetaDeviceManagementScript $($backup['Id']) completed"
             $targetId = $backup['Id']
         } else {
             Write-Host "Original script $($backup['Id']) no longer exists - recreating '$($backup['DisplayName'])' (new Id will be assigned)..."
@@ -327,6 +334,7 @@ function Restore-WizardBackup {
             if (-not $created -or -not $created.Id) {
                 throw "Recreating '$($backup['DisplayName'])' returned no script id, so its assignments could not be restored. Check the Intune portal before retrying."
             }
+            Write-WizardDebug "New-MgBetaDeviceManagementScript returned id=$($created.Id)"
             $targetId = $created.Id
 
             # Only reachable because the original Id was gone, so whatever this

@@ -70,6 +70,8 @@ function Get-ScriptMetadata {
     $typeOverride = $false
     $noAssignments = $false
     $assignAll = $false
+    $assignDevices = $false
+    $assignUsers = $false
     $noTemplate = $false
     $enforceSignatureCheck = $false
     $runAs32Bit = $true   # default: do NOT run in 64-bit PowerShell host
@@ -133,6 +135,20 @@ function Get-ScriptMetadata {
         # no way to say so - '#group:' alone means "only these groups".
         if ($trimmed -match '^#\s*assignall\s*$') {
             $assignAll = $true
+            continue
+        }
+        # Independent of #type: and #assignall - a script can be assigned to
+        # BOTH the all-devices and all-licensed-users default targets at once
+        # (a normal thing to do from the Intune portal, regardless of which
+        # host a script itself runs under). #assignall alone can only ever add
+        # the target matching this script's own #type:, so these two exist to
+        # add the OTHER one on top when a script genuinely has both.
+        if ($trimmed -match '^#\s*assigndevices\s*$') {
+            $assignDevices = $true
+            continue
+        }
+        if ($trimmed -match '^#\s*assignusers\s*$') {
+            $assignUsers = $true
             continue
         }
         if ($trimmed -match $script:WizardNoTemplatePattern) {
@@ -202,6 +218,10 @@ function Get-ScriptMetadata {
         throw "'$Path': #noassignments cannot be combined with #assignall. Remove one or the other."
     }
 
+    if ($noAssignments -and ($assignDevices -or $assignUsers)) {
+        throw "'$Path': #noassignments cannot be combined with #assigndevices or #assignusers. Remove one or the other."
+    }
+
     # Pipeline: $groupRefs is piped into Where-Object, which keeps only the
     # entries that also appear in $excludeGroupRefs (-in checks membership).
     # The result is any group listed in both places, which is a contradiction.
@@ -221,6 +241,8 @@ function Get-ScriptMetadata {
         Type                  = $type
         NoAssignments         = $noAssignments
         AssignAll             = $assignAll
+        AssignDevices         = $assignDevices
+        AssignUsers           = $assignUsers
         NoTemplate            = $noTemplate
         EnforceSignatureCheck = $enforceSignatureCheck
         RunAs32Bit            = $runAs32Bit

@@ -208,9 +208,22 @@ function Invoke-WizardGraphRetry {
 
     $attempt = 1
     while ($true) {
+        Write-WizardDebug "$What : sending (attempt $attempt of $script:RetryMaxAttempts)"
         try {
-            return (& $Call)
+            $result = (& $Call)
+            # Logged even on attempt 1 so a clean run's log still shows every
+            # Graph call that happened, not just the ones that had trouble.
+            Write-WizardDebug "$What : Graph returned success on attempt $attempt"
+            return $result
         } catch {
+            # Full status/body for the log, regardless of whether this is
+            # going to retry - this is the actual Graph response, and it is
+            # what tells apart "the write never landed" from "it landed and
+            # something after it failed", which the console warning alone
+            # does not carry.
+            $status = Get-WizardGraphStatusCode -ErrorRecord $_
+            Write-WizardDebug "$What : attempt $attempt failed (status=$status): $(Get-WizardErrorSummary -ErrorRecord $_)"
+
             # Out of attempts, or not the kind of failure that waiting fixes:
             # let the caller's own error handling describe it.
             if ($attempt -ge $script:RetryMaxAttempts -or -not (Test-WizardRetryableFailure -ErrorRecord $_)) {
@@ -224,6 +237,7 @@ function Invoke-WizardGraphRetry {
             # Written to the host, not just the log: an operator watching a run
             # pause for half a minute deserves to know why it is paused.
             Write-Warning "$What was throttled or unavailable ($(Get-WizardErrorSummary -ErrorRecord $_)). Waiting $([Math]::Round($delay, 1))s and retrying (attempt $($attempt + 1) of $script:RetryMaxAttempts)."
+            Write-WizardDebug "$What : waiting $([Math]::Round($delay, 1))s before attempt $($attempt + 1) (status=$status)"
             Start-Sleep -Milliseconds ([int]($delay * 1000))
             $attempt++
         }

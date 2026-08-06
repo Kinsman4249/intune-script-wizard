@@ -125,8 +125,17 @@ function Get-WizardDesiredAssignments {
     #   #noassignments                -> no assignments at all
     #   #group: one or more           -> a groupAssignmentTarget per group
     #   no #group:                    -> the all-users / all-devices default
-    #   #assignall + #group:          -> the default target ALSO added
-    #                                    alongside the listed groups
+    #                                    matching this script's own #type:
+    #   #assignall + #group:          -> that same #type:-matching default
+    #                                    ALSO added alongside the listed groups
+    #   #assigndevices / #assignusers -> the all-devices / all-licensed-users
+    #                                    default ALSO added, independent of
+    #                                    #type: and of #group:. A real Intune
+    #                                    script can be assigned to BOTH default
+    #                                    targets at once regardless of which
+    #                                    host it runs under, which #assignall
+    #                                    alone cannot express since it only
+    #                                    ever adds the #type:-matching one.
     #   #excludegroup: one or more    -> an exclusionGroupAssignmentTarget per
     #                                    group, on top of whichever include
     #                                    targets the rules above produced
@@ -137,6 +146,8 @@ function Get-WizardDesiredAssignments {
         [Parameter(Mandatory)][ValidateSet('user', 'device')][string]$Type,
         [switch]$NoAssignments,
         [switch]$AssignAll,
+        [switch]$AssignDevices,
+        [switch]$AssignUsers,
         [string[]]$IncludeGroupIds = @(),
         [string[]]$ExcludeGroupIds = @()
     )
@@ -144,9 +155,12 @@ function Get-WizardDesiredAssignments {
     if ($NoAssignments) { return @() }
 
     $assignments = @()
-    $defaultTarget = @{
-        '@odata.type' = "#microsoft.graph.$(Get-WizardAssignmentTargetType -Type $Type)"
-    }
+
+    # A set (not a list) because #assigndevices/#assignusers can name the same
+    # default target #assignall (or the no-#group: default) already added -
+    # e.g. #type:device with #assignusers also present must still produce only
+    # ONE allDevicesAssignmentTarget, not two.
+    $defaultTargetTypes = [System.Collections.Generic.HashSet[string]]::new()
 
     if ($IncludeGroupIds.Count -gt 0) {
         foreach ($groupId in $IncludeGroupIds) {
@@ -155,16 +169,27 @@ function Get-WizardDesiredAssignments {
                 'groupId'     = $groupId
             }
         }
-        # Only #assignall adds the default target on top of explicit groups -
-        # without it, '#group:' alone still means "only these groups".
+        # Only #assignall adds the #type:-matching default on top of explicit
+        # groups - without it, '#group:' alone still means "only these groups".
         if ($AssignAll) {
-            $assignments += New-WizardAssignmentEntry -Target $defaultTarget
+            [void]$defaultTargetTypes.Add((Get-WizardAssignmentTargetType -Type $Type))
         }
     } else {
-        # No groups named: the default target applies whether or not #assignall
-        # is present, same as it always has - #assignall only adds meaning once
-        # #group: entries are also in the picture.
-        $assignments += New-WizardAssignmentEntry -Target $defaultTarget
+        # No groups named: the #type:-matching default applies whether or not
+        # #assignall is present, same as it always has - #assignall only adds
+        # meaning once #group: entries are also in the picture.
+        [void]$defaultTargetTypes.Add((Get-WizardAssignmentTargetType -Type $Type))
+    }
+
+    # Unconditional and independent of #group:/#assignall: these ask for the
+    # other default target regardless of what else is being assigned.
+    if ($AssignDevices) { [void]$defaultTargetTypes.Add('allDevicesAssignmentTarget') }
+    if ($AssignUsers) { [void]$defaultTargetTypes.Add('allLicensedUsersAssignmentTarget') }
+
+    foreach ($targetType in $defaultTargetTypes) {
+        $assignments += New-WizardAssignmentEntry -Target @{
+            '@odata.type' = "#microsoft.graph.$targetType"
+        }
     }
 
     foreach ($groupId in $ExcludeGroupIds) {
@@ -185,12 +210,23 @@ function Get-WizardAssignmentSummary {
 
     if ($Meta.NoAssignments) { return 'no assignments' }
 
-    $defaultLabel = if ($Meta.Type -eq 'user') { 'all users' } else { 'all devices' }
-    $summary = if (@($Meta.GroupRefs).Count -gt 0) {
+    $hasGroups = @($Meta.GroupRefs).Count -gt 0
+    # Mirrors Get-WizardDesiredAssignments' own rules for which default
+    # target(s) actually end up in the assignment set, so this summary never
+    # drifts from what gets pushed to Graph.
+    $typeMatchingIncluded = (-not $hasGroups) -or $Meta.AssignAll
+    $devicesIncluded = ($Meta.Type -eq 'device' -and $typeMatchingIncluded) -or $Meta.AssignDevices
+    $usersIncluded = ($Meta.Type -eq 'user' -and $typeMatchingIncluded) -or $Meta.AssignUsers
+
+    $defaultLabels = @()
+    if ($devicesIncluded) { $defaultLabels += 'all devices' }
+    if ($usersIncluded) { $defaultLabels += 'all users' }
+
+    $summary = if ($hasGroups) {
         $groupsLabel = "group(s): $(@($Meta.GroupRefs) -join ', ')"
-        if ($Meta.AssignAll) { "$groupsLabel, plus $defaultLabel" } else { $groupsLabel }
+        if ($defaultLabels.Count -gt 0) { "$groupsLabel, plus $($defaultLabels -join ', ')" } else { $groupsLabel }
     } else {
-        $defaultLabel
+        $defaultLabels -join ', '
     }
 
     if (@($Meta.ExcludeGroupRefs).Count -gt 0) {
@@ -213,6 +249,8 @@ function Set-WizardAssignments {
         -Type $Meta.Type `
         -NoAssignments:$Meta.NoAssignments `
         -AssignAll:$Meta.AssignAll `
+        -AssignDevices:$Meta.AssignDevices `
+        -AssignUsers:$Meta.AssignUsers `
         -IncludeGroupIds $Meta.IncludeGroupIds `
         -ExcludeGroupIds $Meta.ExcludeGroupIds)
 

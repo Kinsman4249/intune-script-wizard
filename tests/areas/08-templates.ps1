@@ -35,6 +35,7 @@ $tplDeviceBody = "# device template source`nWrite-Host 'device'`n"
 $tplUserBody   = "# user template source`nWrite-Host 'user'`n"
 $tplAllBody    = "# all-devices template source`nWrite-Host 'all'`n"
 $tplGroupAllBody = "# group-plus-all template source`nWrite-Host 'groupall'`n"
+$tplBothBody   = "# both-defaults template source`nWrite-Host 'both'`n"
 $tplUnkBody    = "# unknown-group template source`nWrite-Host 'unknown'`n"
 
 $tplState = @{
@@ -76,6 +77,17 @@ $tplState = @{
             assignments = @(
                 @{ id = 'a5'; target = @{ '@odata.type' = '#microsoft.graph.groupAssignmentTarget'; groupId = $tplHelpdeskId } }
                 @{ id = 'a6'; target = @{ '@odata.type' = '#microsoft.graph.allDevicesAssignmentTarget' } }
+            )
+        }
+        @{
+            id = 'tpl-both-1'; displayName = 'BothDefaults Template Script'; description = ''
+            fileName = 'bd.ps1'
+            scriptContent = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($tplBothBody))
+            runAsAccount = 'system'; enforceSignatureCheck = $false; runAs32Bit = $true
+            roleScopeTagIds = @('0'); lastModifiedDateTime = (Get-Date).ToString('o')
+            assignments = @(
+                @{ id = 'a7'; target = @{ '@odata.type' = '#microsoft.graph.allDevicesAssignmentTarget' } }
+                @{ id = 'a8'; target = @{ '@odata.type' = '#microsoft.graph.allLicensedUsersAssignmentTarget' } }
             )
         }
         @{
@@ -142,6 +154,18 @@ Check 'Round-trip: group + all-devices target -> #group: and #assignall both set
     ($groupAllMeta.GroupRefs -join ',') -eq 'Helpdesk Laptops' -and $groupAllMeta.AssignAll -and -not $groupAllMeta.NoAssignments
 ) "GroupRefs=$($groupAllMeta.GroupRefs -join ','); AssignAll=$($groupAllMeta.AssignAll); NoAssignments=$($groupAllMeta.NoAssignments)"
 
+# A script assigned to BOTH the all-devices and all-licensed-users default
+# targets at once - independent of its own #type:, and the exact shape that
+# used to be lost on a template round-trip (only the #type:-matching target
+# survived). #type:device covers all-devices via #assignall; #assignusers
+# names the other one explicitly so both come back.
+$bothPath = Join-Path $tplDeviceDir 'BothDefaults_Template_Script.ps1'
+Check 'Templates: both-defaults template file written' (Test-Path -LiteralPath $bothPath) $rTpl.Output
+$bothMeta = Get-ScriptMetadata -Path $bothPath -FolderType 'device'
+Check 'Round-trip: both default targets -> #assignall and #assignusers both set, not #assigndevices' (
+    $bothMeta.GroupRefs.Count -eq 0 -and $bothMeta.AssignAll -and $bothMeta.AssignUsers -and -not $bothMeta.AssignDevices -and -not $bothMeta.NoAssignments
+) "AssignAll=$($bothMeta.AssignAll); AssignUsers=$($bothMeta.AssignUsers); AssignDevices=$($bothMeta.AssignDevices); NoAssignments=$($bothMeta.NoAssignments)"
+
 # Body bytes after the end marker must be byte-identical to the original -
 # proven at the text level here since every body in this section is plain ASCII.
 Check 'Body tail unchanged: device' ((Get-WizardTemplateBodyTail $devicePath) -eq $tplDeviceBody) "got '$(Get-WizardTemplateBodyTail $devicePath)'"
@@ -159,7 +183,7 @@ Check 'Unknown group: run still exits 0'      ($rTpl.ExitCode -eq 0) "got $($rTp
 $firstDeviceText = Get-Content -LiteralPath $devicePath -Raw
 $rTpl2 = Invoke-Wizard -Workspace $tplWs -State $tplState -WizardArgs @('-BackupAll')
 Check 'Templates: second -BackupAll exits 0'                   ($rTpl2.ExitCode -eq 0) "got $($rTpl2.ExitCode)`n$($rTpl2.Output)"
-Check 'Templates: second run reports 0 written, all unchanged' ($rTpl2.Output -match 'Templates: 0 written, 5 unchanged, 0 excluded \(#notemplate\), 0 skipped, 0 failed') $rTpl2.Output
+Check 'Templates: second run reports 0 written, all unchanged' ($rTpl2.Output -match 'Templates: 0 written, 6 unchanged, 0 excluded \(#notemplate\), 0 skipped, 0 failed') $rTpl2.Output
 Check 'Templates: second run left the file with exactly one header' (
     ([regex]::Matches((Get-Content -LiteralPath $devicePath -Raw), [regex]::Escape('# --- intune-script-wizard template ---'))).Count -eq 1
 ) 'more than one header block found'
@@ -174,7 +198,7 @@ $tplStateMutated = @{ groups = $tplGroups; scripts = @($tplState['scripts'] | Fo
     $copy
 }) }
 $rTpl3 = Invoke-Wizard -Workspace $tplWs -State $tplStateMutated -WizardArgs @('-BackupAll')
-Check 'Templates: mutated tenant script is skipped, not overwritten' ($rTpl3.Output -match 'Templates: 0 written, 4 unchanged, 0 excluded \(#notemplate\), 1 skipped, 0 failed') $rTpl3.Output
+Check 'Templates: mutated tenant script is skipped, not overwritten' ($rTpl3.Output -match 'Templates: 0 written, 5 unchanged, 0 excluded \(#notemplate\), 1 skipped, 0 failed') $rTpl3.Output
 Check 'Templates: skip is explained as cannot-prompt'                ($rTpl3.Output -match 'cannot prompt; skipping') $rTpl3.Output
 Check 'Templates: skipped file is untouched'                        ((Get-Content -LiteralPath $devicePath -Raw) -eq $firstDeviceText) 'file was overwritten despite being skipped'
 
@@ -184,7 +208,7 @@ $rNoTpl = Invoke-Wizard -Workspace $noTplWs -State $tplState -WizardArgs @('-Bac
 Check '-NoTemplates: exits 0'                   ($rNoTpl.ExitCode -eq 0) "got $($rNoTpl.ExitCode)`n$($rNoTpl.Output)"
 Check '-NoTemplates: creates no templates/ dir' (-not (Test-Path -LiteralPath (Join-Path $noTplWs 'templates'))) 'templates/ was created despite -NoTemplates'
 $noTplBackups = @(Get-ChildItem -LiteralPath (Join-Path $noTplWs 'backups') -Filter '*.json' -ErrorAction SilentlyContinue)
-Check '-NoTemplates: still writes JSON backups' ($noTplBackups.Count -eq 5) "got $($noTplBackups.Count)"
+Check '-NoTemplates: still writes JSON backups' ($noTplBackups.Count -eq 6) "got $($noTplBackups.Count)"
 
 $r = Invoke-Wizard -Workspace (New-Workspace -Scripts @()) -State @{ scripts = @() } -WizardArgs @('-NoTemplates')
 Check '-NoTemplates without -Backup/-BackupAll is refused' ($r.Output -match 'only applies to -Backup/-BackupAll') $r.Output
@@ -314,6 +338,28 @@ try {
 Check 'Header: -NoAssignments with -AssignAll throws' (
     $noAssignAllThrew -and $noAssignAllMessage -match 'cannot be combined with -AssignAll'
 ) $noAssignAllMessage
+
+$bothDefaultsResult = New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'Both Defaults Script' -Type 'device' -AssignAll -AssignUsers
+Check 'Header: -AssignUsers emits #assignusers alongside #assignall' (
+    $bothDefaultsResult.Text -match '(?m)^#assignall\s*$' -and $bothDefaultsResult.Text -match '(?m)^#assignusers\s*$'
+) $bothDefaultsResult.Text
+
+$assignDevicesResult = New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'Assign Devices Script' -Type 'user' -AssignAll -AssignDevices
+Check 'Header: -AssignDevices emits #assigndevices alongside #assignall' (
+    $assignDevicesResult.Text -match '(?m)^#assignall\s*$' -and $assignDevicesResult.Text -match '(?m)^#assigndevices\s*$'
+) $assignDevicesResult.Text
+
+$noAssignExtraThrew = $false
+$noAssignExtraMessage = ''
+try {
+    New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'Bad' -Type 'device' -NoAssignments -AssignUsers | Out-Null
+} catch {
+    $noAssignExtraThrew = $true
+    $noAssignExtraMessage = $_.Exception.Message
+}
+Check 'Header: -NoAssignments with -AssignUsers throws' (
+    $noAssignExtraThrew -and $noAssignExtraMessage -match 'cannot be combined with -AssignDevices/-AssignUsers'
+) $noAssignExtraMessage
 
 $guidNameResult = Format-WizardGroupDirective -Entry @{ Id = $tplHelpdeskId; Name = $tplPilotId } -Directive 'group'
 Check 'Header: a group display name that itself parses as a GUID falls back' (

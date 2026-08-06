@@ -185,10 +185,17 @@ function New-WizardTemplateHeader {
         # this is $false (32-bit is the default, so it needs no directive).
         [bool]$RunAs32Bit = $true,
         [switch]$NoAssignments,
-        # Set when the tenant's live assignments included the default
-        # all-users/all-devices target - whether alone, or alongside specific
-        # groups (a combination '#group:' by itself cannot express).
+        # Set when the tenant's live assignments included the default target
+        # matching this script's own #type: - whether alone, or alongside
+        # specific groups (a combination '#group:' by itself cannot express).
         [switch]$AssignAll,
+        # Set when the tenant's live assignments ALSO included the default
+        # target that does NOT match this script's own #type: - a script can
+        # be assigned to both all-devices and all-licensed-users at once,
+        # independent of which host it runs under, which -AssignAll alone
+        # cannot express since it only ever covers the #type:-matching one.
+        [switch]$AssignDevices,
+        [switch]$AssignUsers,
         # Each entry: @{ Id = '<guid>'; Name = '<display name>' (or $null) }
         [array]$IncludeGroups = @(),
         [array]$ExcludeGroups = @(),
@@ -210,6 +217,9 @@ function New-WizardTemplateHeader {
     }
     if ($NoAssignments -and $AssignAll) {
         throw "New-WizardTemplateHeader: -NoAssignments cannot be combined with -AssignAll; Parsing.ps1 rejects that combination on the way back in."
+    }
+    if ($NoAssignments -and ($AssignDevices -or $AssignUsers)) {
+        throw "New-WizardTemplateHeader: -NoAssignments cannot be combined with -AssignDevices/-AssignUsers; Parsing.ps1 rejects that combination on the way back in."
     }
 
     $warnings = @()
@@ -273,6 +283,8 @@ function New-WizardTemplateHeader {
     }
 
     if ($AssignAll) { $lines += '#assignall' }
+    if ($AssignDevices) { $lines += '#assigndevices' }
+    if ($AssignUsers) { $lines += '#assignusers' }
     if ($NoAssignments) { $lines += '#noassignments' }
 
     # Deliberately not a live #typeoverride:yes. The doubled '#' below cannot

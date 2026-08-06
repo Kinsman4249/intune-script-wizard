@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+Fixed template export collapsing a script assigned to BOTH the all-devices and all-licensed-users default targets into a single `#assignall`, which only ever encodes the default matching the script's own `#type:` - the tenant-wide e2e restore test caught this as `assignments differ` on 9 real scripts that had both targets independently of `#type:` (a normal Intune portal configuration). Added two new meta comments, `#assigndevices` and `#assignusers`, that add the *other* default target regardless of `#type:`/`#assignall`; `Get-WizardDesiredAssignments` (`lib/Assignments.ps1`) now builds the default-target set from a `HashSet` so `#assignall` and `#assigndevices`/`#assignusers` can't double up, `Get-ScriptMetadata` (`lib/Parsing.ps1`) parses the two new directives and rejects them alongside `#noassignments` like the existing directives, and `Export-WizardScriptTemplate` (`lib/Template.ps1`) now tracks each default target independently instead of collapsing both into one `$assignAll` flag, emitting `#assigndevices`/`#assignusers` whenever the tenant's live assignments include the non-`#type:`-matching default.
+
 ## [1.17.0] - 2026-08-06
 
 ### Added

@@ -37,6 +37,8 @@ effect on the endpoint.
 | `#noassignments` (or `#noassigments`) | Do not assign this script to anyone |
 | `#group:"Name"` or `#group:<guid>` | Assign to this group instead of all users/devices. Repeatable |
 | `#assignall` | With `#group:`, also assign to all users/devices (on top of the named group(s)) instead of replacing the default |
+| `#assigndevices` | Also assign to all devices, independent of this script's own `#type:` (a script can target both defaults at once) |
+| `#assignusers` | Also assign to all licensed users, independent of this script's own `#type:` |
 | `#excludegroup:"Name"` or `#excludegroup:<guid>` | Exclude this group from the assignment. Repeatable |
 | `#scriptcheck:yes` | Enforce script signature check (default: off) |
 | `#host:64` | Run under 64-bit PowerShell host (default: 32-bit) |
@@ -74,6 +76,11 @@ By default a script goes to **all users** (`user/`) or **all devices**
 # A specific group AND the default all-devices/all-users target, both:
 #group:"Pilot Ring"
 #assignall
+
+# A device script (#type:device) ALSO assigned to all licensed users - the
+# two defaults are independent of #type:, so either can be added regardless
+# of which host the script runs under:
+#assignusers
 ```
 
 Notes:
@@ -89,9 +96,9 @@ Notes:
   legal in Entra ID, so the tool refuses to guess - use the GUID instead.
 - Assignments are a full replacement, so adding `#group:` to a script that was
   previously assigned to all devices moves it; it doesn't stack.
-- `#noassignments` combined with `#group:`/`#excludegroup:`/`#assignall`, or
-  the same group listed as both include and exclude, is rejected at parse
-  time.
+- `#noassignments` combined with `#group:`/`#excludegroup:`/`#assignall`/
+  `#assigndevices`/`#assignusers`, or the same group listed as both include
+  and exclude, is rejected at parse time.
 - `-DryRun` prints the resolved target for each script, so you can confirm the
   intent before anything changes.
 
@@ -223,8 +230,11 @@ settings: `#scriptname:`, `#type:`, a `#startdesc`/`#enddesc` block if there's
 a description, `#scriptcheck:yes`/`#host:64` if either is non-default,
 `#group:`/`#excludegroup:` for each assignment target (group ids are
 reverse-resolved back to their display names - see below), `#assignall` if
-the tenant's assignments also include the default all-users/all-devices
-target alongside specific groups, and `#noassignments` if the script
+the tenant's assignments also include the default target matching this
+script's own `#type:` alongside specific groups, `#assigndevices`/
+`#assignusers` if the assignments *also* include the other default target
+(a script can be assigned to both all-devices and all-licensed-users at
+once, independent of `#type:`), and `#noassignments` if the script
 currently has none. Re-exporting a script
 whose template already exists updates the header in place and leaves
 everything below it - the actual script body - untouched.

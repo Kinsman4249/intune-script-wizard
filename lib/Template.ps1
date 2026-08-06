@@ -178,7 +178,8 @@ function Export-WizardScriptTemplate {
     $includeGroups = @()
     $excludeGroups = @()
     $unsupportedWarnings = @()
-    $assignAll = $false
+    $hasAllDevices = $false
+    $hasAllUsers = $false
     $noAssignments = ($Assignments.Count -eq 0)
 
     foreach ($assignment in $Assignments) {
@@ -193,13 +194,22 @@ function Export-WizardScriptTemplate {
                 $groupId = [string]$target['groupId']
                 $excludeGroups += @{ Id = $groupId; Name = (Resolve-WizardGroupDisplayName -Id $groupId -State $State) }
             }
-            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $assignAll = $true }
-            '#microsoft.graph.allDevicesAssignmentTarget' { $assignAll = $true }
+            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $hasAllUsers = $true }
+            '#microsoft.graph.allDevicesAssignmentTarget' { $hasAllDevices = $true }
             default {
                 $unsupportedWarnings += "Assignment target of type '$($target['@odata.type'])' on '$($Script.DisplayName)' cannot be expressed by any #group:/#excludegroup: directive; the JSON backup is the record of it."
             }
         }
     }
+
+    # #assignall only ever covers the default target matching this script's
+    # own #type: (see Get-WizardDesiredAssignments). A script assigned to BOTH
+    # all-devices and all-licensed-users needs the OTHER one named explicitly
+    # via #assigndevices/#assignusers, or it would silently collapse to just
+    # one of the two on the next restore/deploy.
+    $assignAll = if ($type -eq 'user') { $hasAllUsers } else { $hasAllDevices }
+    $assignDevices = ($type -eq 'user') -and $hasAllDevices
+    $assignUsers = ($type -eq 'device') -and $hasAllUsers
 
     $newLine = if (Test-WizardBodyUsesCrlf -Bytes $bodyBytes) { "`r`n" } else { "`n" }
 
@@ -212,6 +222,8 @@ function Export-WizardScriptTemplate {
         -RunAs32Bit (Get-WizardScriptRunAs32Bit -Script $Script) `
         -NoAssignments:$noAssignments `
         -AssignAll:$assignAll `
+        -AssignDevices:$assignDevices `
+        -AssignUsers:$assignUsers `
         -IncludeGroups $includeGroups `
         -ExcludeGroups $excludeGroups `
         -UnsupportedTargetWarnings $unsupportedWarnings `

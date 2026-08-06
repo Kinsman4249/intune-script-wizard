@@ -21,6 +21,7 @@ $ws = New-Workspace -Scripts @(
     @{ Rel = 'device/Excl-Guid.ps1'; Body = "#excludegroup:$exclGuid`nWrite-Host 'd'`n" }
     @{ Rel = 'device/Mixed-Refs.ps1'; Body = "#group:`"Helpdesk Laptops`"`n#excludegroup:$exclGuid`nWrite-Host 'e'`n" }
     @{ Rel = 'device/Group-Plus-All.ps1'; Body = "#group:`"Helpdesk Laptops`"`n#assignall`nWrite-Host 'f'`n" }
+    @{ Rel = 'device/Both-Defaults.ps1'; Body = "#assignusers`nWrite-Host 'g'`n" }
 )
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 
@@ -83,6 +84,15 @@ Check '#assignall keeps both the group and the all-devices default' (
     ($groupPlusAll | Where-Object { $_['@odata.type'] -eq '#microsoft.graph.groupAssignmentTarget' }).groupId -eq $helpdeskId
 ) ($groupPlusAll | ConvertTo-Json -Compress)
 
+# #assignusers on a device-type script adds the all-licensed-users default ON
+# TOP of the all-devices default that #type:device already implies, rather
+# than replacing it - a device script can be independently assigned to both.
+$bothDefaults = Get-TargetsFor $r.State 'Both-Defaults'
+$bothDefaultsTypes = @($bothDefaults | ForEach-Object { $_['@odata.type'] }) | Sort-Object
+Check '#assignusers on a device script keeps both default targets' (
+    ($bothDefaultsTypes -join ',') -eq '#microsoft.graph.allDevicesAssignmentTarget,#microsoft.graph.allLicensedUsersAssignmentTarget'
+) ($bothDefaults | ConvertTo-Json -Compress)
+
 # --------------------------------------------------------------- Test 11
 # Unresolvable and ambiguous group names abort the whole run.
 foreach ($case in @(
@@ -108,6 +118,10 @@ Check '#noassignments + #group: rejected' ($r.Output -match 'cannot be combined'
 $ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#noassignments`n#assignall`n$bodyA" })
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 Check '#noassignments + #assignall rejected' ($r.Output -match 'cannot be combined') $r.Output
+
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#noassignments`n#assignusers`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
+Check '#noassignments + #assignusers rejected' ($r.Output -match 'cannot be combined') $r.Output
 
 $ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#group:`"Pilot Ring`"`n#excludegroup:`"Pilot Ring`"`n$bodyA" })
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
