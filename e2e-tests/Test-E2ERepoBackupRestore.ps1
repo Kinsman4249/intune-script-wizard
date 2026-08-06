@@ -144,7 +144,12 @@ function Invoke-Deploy {
     # child skips the tenant-confirmation prompt this script already answered
     # (and never attempts first-run repo-push setup on its own).
     param([string[]]$WizardArgs)
-    $output = '' | & pwsh -NoProfile -File $deploy @WizardArgs 2>&1 | Out-String
+    # *>&1, not 2>&1: a push failure in Push-WizardBackupsToRepo
+    # (lib/RepoBackup.ps1) is deliberately reported via Write-Warning, not a
+    # thrown error - that's stream 3, which 2>&1 does not merge. Missing it
+    # here means the run looks like a clean success right up until the
+    # separate remote-verification step, with no clue why.
+    $output = '' | & pwsh -NoProfile -File $deploy @WizardArgs *>&1 | Out-String
     return [pscustomobject]@{ Output = $output; ExitCode = $LASTEXITCODE }
 }
 
