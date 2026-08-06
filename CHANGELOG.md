@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.18.3] - 2026-08-06
+
+### Changed
+
+Expanded the README headline to mention repo sourcing, templating, and remote sync alongside the core deploy description, since the split into `docs/` topic pages had left the landing page underselling what the wizard does. Changed the license's post-Change-Date fallback (the `Change License` field, effective 2030-08-05) from Apache License 2.0 to GPLv3.
+
 ## [1.18.2] - 2026-08-06
 
 ### Changed
