@@ -2,7 +2,10 @@
 
 Deploys PowerShell platform scripts to Microsoft Intune from local `user/` and
 `device/` folders (or loose scripts carrying a `#type:` comment), using the
-Microsoft Graph beta `deviceManagementScript` API.
+Microsoft Graph beta `deviceManagementScript` API. Can also pull scripts
+straight from a git repo, template a tenant's current scripts back out for
+promotion into another one, and keep backups/templates in sync with a remote
+repo automatically.
 
 ## What it does
 
