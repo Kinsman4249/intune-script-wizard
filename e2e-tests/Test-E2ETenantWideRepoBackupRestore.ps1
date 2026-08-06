@@ -269,6 +269,21 @@ try {
         foreach ($line in $conflictLines) { Write-Host "    $line" -ForegroundColor Yellow }
     }
 
+    # Push-WizardBackupsToRepo (lib/RepoBackup.ps1) deliberately never fails
+    # the run on a push error - it warns and leaves the local copy as the
+    # safety net. That means a real push failure is invisible on the console
+    # here too (Check only prints $run.Output when the exit-code check
+    # itself fails), so it would otherwise only surface indirectly as a
+    # remote/local mismatch in step 4 with no explanation. Surface it now,
+    # unconditionally, so the actual cause is on screen before that happens.
+    $pushFailureLines = @($run.Output -split "`r?`n" | Where-Object {
+        $_ -match 'the push to the configured repo failed'
+    })
+    if ($pushFailureLines.Count -gt 0) {
+        Write-Host "  Push to the configured repo reported a failure - step 4 will show the remote as unchanged:" -ForegroundColor Red
+        foreach ($line in $pushFailureLines) { Write-Host "    $line" -ForegroundColor Red }
+    }
+
     $backupDir = Join-Path $WorkPath 'backups'
     $backupFiles = @(Get-ChildItem -LiteralPath $backupDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
     Check "Backed up $($backupFiles.Count) of $($originalList.Count) script(s) to JSON" ($backupFiles.Count -eq $originalList.Count) `
