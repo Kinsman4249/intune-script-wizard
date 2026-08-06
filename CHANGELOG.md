@@ -1,5 +1,9 @@
 # Change history
 
+### v1.14.4 (2026-08-06)
+
+Documentation updates: added a new section in the README explaining optional CLI installations (`gh` for GitHub/GitLab and `az` for Azure DevOps), which streamline remote-repo authentication without being hard requirements. Reorganized the E2E testing section to be more concise and point readers to [e2e-tests/README.md](e2e-tests/README.md) for details on each test's purpose and when to run it. Added an "After any change" section to the E2E tests README with guidance on validating changes against a non-production tenant before pushing.
+
 ### v1.14.3 (2026-08-05)
 
 Reorganised the library and the test suite into smaller, single-topic files, with no change to behaviour - every function is the same code in a new home, and the regression suite is green before and after. `lib/GraphOps.ps1` had grown to cover four unrelated concerns, so it was split: `lib/GraphCore.ps1` holds the foundation every Graph-touching file builds on (script-content normalisation and the throttling/transient-failure retry that wraps every call), `lib/GraphAuth.ps1` holds sign-in (scopes, the fresh-session-per-run rule, the typed tenant confirmation) and both directions of group-reference resolution, `lib/Assignments.ps1` holds reading, building and full-replacement pushing of a script's assignments, and `lib/GraphOps.ps1` keeps only the script create/update calls. `lib/Backup.ps1` similarly split off `lib/Restore.ps1` - take-a-snapshot and put-a-snapshot-back are independent concerns that share only the on-disk schema - and `lib/Template.ps1` split off `lib/TemplateHeader.ps1`, the pure, side-effect-free core of template export (byte helpers, header stripping, header building) that has no Graph or disk access and is the directly unit-testable heart of the feature.

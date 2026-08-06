@@ -285,7 +285,7 @@ function Request-WizardRepoBackupSetup {
         return
     }
     $isAzureDevOps = $remoteUrl -match '(?i)dev\.azure\.com|\.visualstudio\.com'
-    $hasGh = Test-WizardCommandAvailable -Name 'git' -and (Test-WizardCommandAvailable -Name 'gh')
+    $hasGh = $hasGit -and (Test-WizardCommandAvailable -Name 'gh')
 
     try {
         if ($isAzureDevOps) {
