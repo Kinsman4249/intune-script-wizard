@@ -30,7 +30,7 @@ function Get-WizardRepoKindInfo {
                 ConfigFile   = 'repo-template-config.json'
                 Noun         = 'templates'
                 SetupPrompt  = 'Also push exported templates to a remote git repo? (y/N)'
-                UrlPrompt    = 'Repo URL to push templates to (e.g. https://github.com/you/templates.git)'
+                UrlPrompt    = 'Repo URL to push templates to - <git-url>[#branch][::subpath] (e.g. https://github.com/you/templates.git, or for Azure DevOps: https://org@dev.azure.com/org/project/_git/repo#branch::path/in/repo)'
                 CommitPrefix = 'Templates'
             }
         }
@@ -39,7 +39,7 @@ function Get-WizardRepoKindInfo {
                 ConfigFile   = 'repo-backup-config.json'
                 Noun         = 'backups'
                 SetupPrompt  = 'Also back up these backup files to a remote git repo? (y/N)'
-                UrlPrompt    = 'Repo URL to push backups to (e.g. https://github.com/you/backups.git)'
+                UrlPrompt    = 'Repo URL to push backups to - <git-url>[#branch][::subpath] (e.g. https://github.com/you/backups.git, or for Azure DevOps: https://org@dev.azure.com/org/project/_git/repo#branch::path/in/repo)'
                 CommitPrefix = 'Backup'
             }
         }
@@ -257,24 +257,46 @@ function Request-WizardRepoBackupSetup {
         return
     }
 
-    $remoteUrl = Read-Host $info.UrlPrompt
-    if ([string]::IsNullOrWhiteSpace($remoteUrl)) {
+    $rawUrl = Read-Host $info.UrlPrompt
+    if ([string]::IsNullOrWhiteSpace($rawUrl)) {
         Write-Host "  No URL entered; skipping repo $($info.Noun) setup." -ForegroundColor Yellow
         return
     }
 
+    # Same '<git-url>[#ref][::subpath]' syntax -SourceRepo already uses
+    # (lib/RepoSource.ps1), so pushing into a subfolder of a shared repo uses
+    # the one syntax people have to learn either way. $remoteUrl below is
+    # always the bare git URL - credential storage and provider detection key
+    # off it directly, never off the '#ref::subpath' suffix.
+    try {
+        $spec = Get-WizardRepoSourceSpec -Raw $rawUrl
+    } catch {
+        Write-Warning "Could not parse that repo URL: $($_.Exception.Message)"
+        return
+    }
+    $remoteUrl = $spec.Url
+
     # backups/.git and templates/.git are two unrelated repos with disjoint
-    # histories. Pointed at the same remote branch, each push rejects the
-    # other's history - so the second one configured must be told and must
-    # opt in explicitly rather than silently fighting the first.
+    # histories. Pointed at the same remote branch with no subpath (or the
+    # same subpath), each push rejects the other's history - so the second
+    # one configured must be told and must opt in explicitly rather than
+    # silently fighting the first. Different subpaths of the same repo/branch
+    # don't collide (each push only ever touches its own subfolder), so that
+    # combination is allowed without a warning.
     if ($Kind -eq 'Templates') {
         $backupsConfig = Get-WizardRepoBackupConfig -Kind Backups
-        if ($backupsConfig -and -not $backupsConfig['Declined'] -and $backupsConfig['RemoteUrl'] -eq $remoteUrl) {
-            Write-Warning "This is the same remote URL already configured for backups ($remoteUrl). backups/ and templates/ are two independent git repos with unrelated histories - pushing both to the same remote branch means each push rejects the other's history."
-            $confirm = Read-Host "Use it anyway? (y/N)"
-            if ($confirm -notmatch '^y(es)?$') {
-                Write-Host "  Not configuring the templates repo push." -ForegroundColor DarkGray
-                return
+        if ($backupsConfig -and -not $backupsConfig['Declined'] -and
+            $backupsConfig['RemoteUrl'] -eq $remoteUrl -and
+            "$($backupsConfig['Ref'])" -eq "$($spec.Ref)") {
+            $confinedToDifferentSubpaths = $backupsConfig['Subpath'] -and $spec.SubPath -and
+                ($backupsConfig['Subpath'] -ne $spec.SubPath)
+            if (-not $confinedToDifferentSubpaths) {
+                Write-Warning "This is the same remote ($($spec.Label)) already configured for backups. backups/ and templates/ push independent, unrelated git histories - unless each is confined to its own '::subpath', pushing both means each push rejects the other's history."
+                $confirm = Read-Host "Use it anyway? (y/N)"
+                if ($confirm -notmatch '^y(es)?$') {
+                    Write-Host "  Not configuring the templates repo push." -ForegroundColor DarkGray
+                    return
+                }
             }
         }
     }
@@ -312,10 +334,13 @@ function Request-WizardRepoBackupSetup {
     Save-WizardRepoBackupConfig -Kind $Kind -Config @{
         Provider     = $provider
         RemoteUrl    = $remoteUrl
+        Ref          = $spec.Ref
+        Subpath      = $spec.SubPath
+        Raw          = $rawUrl
         Declined     = $false
         ConfiguredAt = (Get-Date).ToString('o')
     }
-    Write-Host "  Repo backup configured ($provider -> $remoteUrl). Future $($info.Noun) will be pushed automatically." -ForegroundColor Green
+    Write-Host "  Repo backup configured ($provider -> $($spec.Label)). Future $($info.Noun) will be pushed automatically." -ForegroundColor Green
 }
 
 # Commits and pushes whatever is currently in $Dir to the configured remote.
@@ -328,6 +353,15 @@ function Sync-WizardRepoBackupDir {
         [Parameter(Mandatory)][hashtable]$Config,
         [ValidateSet('Backups', 'Templates')][string]$Kind = 'Backups'
     )
+
+    # A configured '::subpath' means $Dir's contents belong in one folder of
+    # an existing remote repo, not at its root - handled by a dedicated clone
+    # + merge flow in RepoBackupSubpath.ps1 rather than the push-to-root path
+    # below, since siblings of that subpath must survive untouched.
+    if ($Config['Subpath']) {
+        Sync-WizardRepoBackupSubpath -Dir $Dir -Config $Config -Kind $Kind
+        return
+    }
 
     $info = Get-WizardRepoKindInfo -Kind $Kind
 

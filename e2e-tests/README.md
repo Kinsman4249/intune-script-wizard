@@ -221,7 +221,11 @@ backup), pushing it to a remote git repo, and pulling it back with
 - makes sure a Templates repo push is configured, walking through the real
   first-run prompt itself if it isn't yet (answer `y`, paste the repo URL,
   complete whichever auth prompt follows - this only happens once; later
-  runs reuse the saved config)
+  runs reuse the saved config). The URL takes `<git-url>[#<ref>][::<subpath>]`
+  - a bare URL pushes to the repo root on its default branch, e.g.
+  `https://github.com/you/templates.git`; add `#branch::path/in/repo` to
+  confine the push to one folder of an existing repo instead, e.g.
+  `https://org@dev.azure.com/org/project/_git/repo#dev::Scripts/Intune`
 - backs up each script by name, which exports a regenerated template and
   pushes `templates/` to the remote
 - clones that remote independently and checks the pushed files are

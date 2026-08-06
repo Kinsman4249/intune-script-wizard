@@ -104,6 +104,7 @@ $repo = Split-Path -Parent $here
 . (Join-Path $repo 'lib/TemplateHeader.ps1')
 . (Join-Path $repo 'lib/Template.ps1')
 . (Join-Path $repo 'lib/RepoBackup.ps1')
+. (Join-Path $repo 'lib/RepoBackupSubpath.ps1')
 . (Join-Path $repo 'lib/RepoSource.ps1')
 
 if (-not $ReportPath) { $ReportPath = Join-Path $WorkPath 'report.md' }

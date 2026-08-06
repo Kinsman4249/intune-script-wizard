@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $env:WIZTEST_REPO "lib/Storage.ps1")
 . (Join-Path $env:WIZTEST_REPO "lib/Prereqs.ps1")
 . (Join-Path $env:WIZTEST_REPO "lib/RepoBackup.ps1")
+. (Join-Path $env:WIZTEST_REPO "lib/RepoBackupSubpath.ps1")
 
 $rbKind = if ($env:WIZTEST_RBKIND) { $env:WIZTEST_RBKIND } else { "Backups" }
 switch ($env:WIZTEST_RBACTION) {
@@ -149,6 +150,56 @@ $tplPushedCommit = (& git --git-dir=$bareRepo2 rev-list --all -n 1 2>$null | Out
 Check 'Push: Templates commit landed in the bare repo' (-not [string]::IsNullOrWhiteSpace($tplPushedCommit)) 'no commit found in the bare repo'
 $tplCommitMessage = (& git --git-dir=$bareRepo2 log -1 --format=%s $tplPushedCommit 2>$null | Out-String).Trim()
 Check 'Push: Templates commit uses the Templates prefix' ($tplCommitMessage -match '^Templates') "got '$tplCommitMessage'"
+
+# ---- '::subpath' push: confined to one folder of an existing repo --------
+# A bare repo standing in for a shared repo that already has unrelated
+# content on its default branch, plus a branch ('dev') that doesn't exist
+# yet - proving both that a subpath push leaves siblings untouched and that
+# it can create the target branch on first push.
+$bareRepo3 = Join-Path $scratch 'bare-repo-subpath.git'
+& git init --bare -q $bareRepo3
+$seedClone = Join-Path $scratch 'seed-clone'
+& git clone -q $bareRepo3 $seedClone 2>$null
+New-Item -ItemType Directory -Path (Join-Path $seedClone 'Scripts/OtherProject') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $seedClone 'Scripts/OtherProject/keep.txt') -Value 'pre-existing content'
+& git -C $seedClone add -A
+& git -C $seedClone -c user.name='Wizard Test' -c user.email='wizard-test@example.invalid' commit -q -m 'Seed'
+& git -C $seedClone push -q origin HEAD:main 2>$null
+# 'git init --bare' leaves HEAD pointing at whatever init.defaultBranch is,
+# which was never actually pushed above (we always push to 'main'
+# explicitly regardless of the seed clone's own local branch name) - fix it
+# up so a branch-less clone below resolves to 'main' instead of an unborn ref.
+& git --git-dir=$bareRepo3 symbolic-ref HEAD refs/heads/main
+
+$rbHomeSubpath = Join-Path $scratch 'rbhome-subpath'
+New-Item -ItemType Directory -Path $rbHomeSubpath -Force | Out-Null
+Invoke-RepoBackupHarness -Action 'save-config' -HomeDir $rbHomeSubpath `
+    -Config @{ Provider = 'git'; RemoteUrl = $bareRepo3; Ref = 'dev'; Subpath = 'Scripts/Intune'; Declined = $false } | Out-Null
+
+$bkSubpath = Join-Path $scratch 'push-subpath'
+New-Item -ItemType Directory -Path $bkSubpath -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $bkSubpath 'script-1.json') -Value '{"Id":"1"}'
+$r = Invoke-RepoBackupHarness -Action 'push' -HomeDir $rbHomeSubpath -BackupDir $bkSubpath
+Check 'Subpath push: end-to-end push succeeds' ($r.ExitCode -eq 0) "exit $($r.ExitCode)`n$($r.Output)"
+
+$devBranches = @(& git --git-dir=$bareRepo3 branch --list 'dev')
+Check 'Subpath push: creates the branch when it did not exist yet' ($devBranches.Count -gt 0) 'no dev branch found'
+
+$devFiles = & git --git-dir=$bareRepo3 ls-tree -r --name-only dev 2>$null
+Check 'Subpath push: file lands under the configured subpath' ($devFiles -contains 'Scripts/Intune/script-1.json') "files: $devFiles"
+Check 'Subpath push: sibling content forked from the default branch survives' ($devFiles -contains 'Scripts/OtherProject/keep.txt') "files: $devFiles"
+
+$mainFiles = & git --git-dir=$bareRepo3 ls-tree -r --name-only main 2>$null
+Check 'Subpath push: default branch is untouched by a push to dev' (-not ($mainFiles -contains 'Scripts/Intune/script-1.json')) "files: $mainFiles"
+
+# A second push to the now-existing 'dev' branch must update only the
+# subpath - the sibling folder from the seed commit must still be there.
+Set-Content -LiteralPath (Join-Path $bkSubpath 'script-2.json') -Value '{"Id":"2"}'
+$r2 = Invoke-RepoBackupHarness -Action 'push' -HomeDir $rbHomeSubpath -BackupDir $bkSubpath
+Check 'Subpath push: second push to an existing branch succeeds' ($r2.ExitCode -eq 0) "exit $($r2.ExitCode)`n$($r2.Output)"
+$devFiles2 = & git --git-dir=$bareRepo3 ls-tree -r --name-only dev 2>$null
+Check 'Subpath push: second push adds the new file under the subpath' ($devFiles2 -contains 'Scripts/Intune/script-2.json') "files: $devFiles2"
+Check 'Subpath push: second push still leaves the sibling folder alone' ($devFiles2 -contains 'Scripts/OtherProject/keep.txt') "files: $devFiles2"
 
 Remove-Item Env:\WIZTEST_RBACTION, Env:\WIZTEST_RBCONFIG, Env:\WIZTEST_BACKUPDIR, Env:\WIZTEST_RBKIND,
     Env:\GIT_AUTHOR_NAME, Env:\GIT_AUTHOR_EMAIL, Env:\GIT_COMMITTER_NAME, Env:\GIT_COMMITTER_EMAIL `

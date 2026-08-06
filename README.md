@@ -276,7 +276,23 @@ unless you delete its config file (see below). Backups and templates are two
 independent prompts, config files, and git repos: declining one never
 silences the other, and pushing the exported templates elsewhere doesn't
 require pushing backups anywhere at all (or vice versa). Say yes and give it
-a repo URL, and it picks an auth method based on what's installed:
+a repo URL, and it picks an auth method based on what's installed.
+
+The URL takes the same `<git-url>[#<ref>][::<subpath>]` form as `-SourceRepo`
+below - a bare URL pushes to the repo's root on its default branch:
+
+```
+https://github.com/you/backups.git
+```
+
+Add `::<subpath>` to confine the push to one folder of an existing repo
+instead - useful when backups or templates share a repo with unrelated
+content - and `#<ref>` to target a specific branch (created on first push if
+it doesn't exist yet):
+
+```
+https://org@dev.azure.com/org/project/_git/repo#dev::Scripts/Intune
+```
 
 - **GitHub, GitLab, or any plain git host**: uses `gh` (GitHub CLI) for a
   one-command interactive sign-in if it's installed, or falls back to asking
@@ -299,9 +315,11 @@ promote) actually depends on, so nothing about the run itself is affected.
 
 `backups/` and `templates/` become two unrelated git repos with disjoint
 histories the moment each is first pushed, so pointing both at the same
-remote branch means each push rejects the other's history. Setting up the
-templates push warns and asks you to confirm if you give it the same URL
-already configured for backups; say no there unless you really mean it.
+remote branch means each push rejects the other's history - unless each is
+confined to its own `::subpath`, in which case they coexist fine. Setting up
+the templates push warns and asks you to confirm if you give it the same
+URL+branch already configured for backups with no such split; say no there
+unless you really mean it.
 
 The choice (provider + remote URL, never a secret) for backups lives in
 `repo-backup-config.json`; the templates one lives in a second, independent

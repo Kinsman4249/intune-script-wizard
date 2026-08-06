@@ -193,7 +193,8 @@ try {
                            'Parsing.ps1', 'Matching.ps1', 'GraphCore.ps1', 'GraphAuth.ps1',
                            'Assignments.ps1', 'GraphOps.ps1', 'Backup.ps1', 'Restore.ps1',
                            'TemplateHeader.ps1', 'Template.ps1', 'RepoBackup.ps1',
-                           'RepoSource.ps1', 'Plan.ps1', 'Deploy.ps1', 'Telemetry.ps1')) {
+                           'RepoBackupSubpath.ps1', 'RepoSource.ps1', 'Plan.ps1',
+                           'Deploy.ps1', 'Telemetry.ps1')) {
         $libPath = Join-Path $here 'lib' $libFile
         if (-not (Test-Path -LiteralPath $libPath -PathType Leaf)) {
             throw "Required library file is missing: $libPath. Copy or clone the wizard folder in full, including lib/."
