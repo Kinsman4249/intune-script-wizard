@@ -6,7 +6,7 @@
 
 ### Changed
 
-Expanded the README headline to mention repo sourcing, templating, and remote sync alongside the core deploy description, since the split into `docs/` topic pages had left the landing page underselling what the wizard does. Changed the license's post-Change-Date fallback (the `Change License` field, effective 2030-08-05) from Apache License 2.0 to GPLv3.
+Expanded the README headline to mention repo sourcing, templating, and remote sync alongside the core deploy description, since the split into `docs/` topic pages had left the landing page underselling what the wizard does. Changed the license's post-Change-Date fallback (the `Change License` field, effective 2030-08-06) from Apache License 2.0 to GPLv3.
 
 ## [1.18.2] - 2026-08-06
 
@@ -79,7 +79,7 @@ Reorganised the library and the test suite into smaller, single-topic files, wit
 
 The entry script `Deploy-IntuneScripts.ps1` shed roughly 470 lines into the new `lib/Deploy.ps1`: the per-script deploy decisions (`Resolve-FuzzyAction`, `Register-DeployedScript`, `Invoke-WizardScriptDeployment`) and the two standalone `-Backup`/`-BackupAll` and `-Restore`/`-RestoreAll` mode functions. The entry script now keeps only its comment-based help, parameter block, the library loader, `Invoke-WizardRun`, and the process entry point. The loader's file list was extended in dependency order to load the new files. Each new file carries a header comment stating what it holds and why it was split out.
 
-The 1500-line `tests/Invoke-WizardTests.ps1` became a thin runner that sets up the shared scratch space and counters, dot-sources `tests/support/TestHelpers.ps1` (the shared harness - `Check`, `New-Workspace`, the sample bodies), then dot-sources every `tests/areas/*.ps1` file in order (`01-deploy-core` through `09-repo-push`). Because each area file is dot-sourced into the runner's scope, they all share the same counters and `$repo`/`$stubs`/`$scratch` exactly as when the suite was one file - just split by topic so no single file runs past 500 lines. Each E2E script under `e2e-tests/` gained a couple of lines to match the new lib layout. Also bumped the version constant to 1.14.3 and advanced the BSL Change Date to 2030-08-05.
+The 1500-line `tests/Invoke-WizardTests.ps1` became a thin runner that sets up the shared scratch space and counters, dot-sources `tests/support/TestHelpers.ps1` (the shared harness - `Check`, `New-Workspace`, the sample bodies), then dot-sources every `tests/areas/*.ps1` file in order (`01-deploy-core` through `09-repo-push`). Because each area file is dot-sourced into the runner's scope, they all share the same counters and `$repo`/`$stubs`/`$scratch` exactly as when the suite was one file - just split by topic so no single file runs past 500 lines. Each E2E script under `e2e-tests/` gained a couple of lines to match the new lib layout. Also bumped the version constant to 1.14.3 and advanced the BSL Change Date to 2030-08-06.
 
 ### v1.14.2 (2026-08-04)
 
