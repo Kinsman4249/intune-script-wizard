@@ -325,8 +325,18 @@ The choice (provider + remote URL, never a secret) for backups lives in
 `repo-backup-config.json`; the templates one lives in a second, independent
 file, `repo-template-config.json` - both next to the wizard's other local
 state: `%APPDATA%\IntuneScriptWizard\` on Windows, `~/.intune-script-wizard/`
-elsewhere. Delete either file to be asked again for that one, or to switch it
-to a different repo/provider.
+elsewhere. Run `-ResetRepoConfig Backups`, `-ResetRepoConfig Templates`, or
+`-ResetRepoConfig All` (also the default with no value) to delete the
+matching file(s) - a declined ("Declined: true") or misconfigured target is
+just as stuck as a first run until its file is gone, so this is the normal
+way back in rather than finding and deleting the file by hand:
+
+```powershell
+./Deploy-IntuneScripts.ps1 -ResetRepoConfig Backups
+```
+
+The next `-Backup`/`-BackupAll` for that target offers the setup prompt
+again.
 
 A template's exported group display names (unlike a JSON backup, which is
 never pushed anywhere by default either) are what's leaving the machine if
@@ -541,6 +551,7 @@ GUIDs for any group reference, with a warning per group affected.
 | `-BackupAll` | Back up every script currently in the tenant |
 | `-NoTemplates` | With `-Backup`/`-BackupAll`: skip the `.ps1` template export |
 | `-ListBackups` | List available backups and exit |
+| `-ResetRepoConfig Backups\|Templates\|All` | Delete the saved repo-push config so the setup prompt runs again; exits immediately |
 | `-SourceRepo <url[#ref][::subpath]>` | Also pull scripts from a git repo (repeatable) |
 | `-SavePlan <file>` | With `-DryRun`: save the exact plan to replay later |
 | `-ApplyPlan <file>` | Replay a plan saved by `-SavePlan` as the real deploy |

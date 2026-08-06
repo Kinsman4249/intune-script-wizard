@@ -105,6 +105,28 @@ function Save-WizardRepoBackupConfig {
     Save-WizardJsonFile -Path $path -Value $Config -Depth 4
 }
 
+# Deletes the given kind's config file (or both, when -Kind is 'All'), so the
+# next -Backup/-BackupAll offers the setup prompt again - the only other way
+# to undo a declined ('Declined: true') or misconfigured push target, short
+# of a user finding and deleting the file by hand. Returns the path(s) it
+# actually removed, for the caller to report; a kind with nothing on disk is
+# silently a no-op rather than an error, since "already reset" and "never
+# configured" should not require different commands.
+function Reset-WizardRepoBackupConfig {
+    param([ValidateSet('Backups', 'Templates', 'All')][string]$Kind = 'All')
+
+    $kinds = if ($Kind -eq 'All') { @('Backups', 'Templates') } else { @($Kind) }
+    $removed = @()
+    foreach ($k in $kinds) {
+        $path = Get-WizardRepoBackupConfigPath -Kind $k
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+            $removed += $path
+        }
+    }
+    return $removed
+}
+
 # Runs an external CLI (git/az) for a step that should either succeed
 # cleanly or fail loudly - throws a clear, wizard-style error on a non-zero
 # exit instead of leaving a native command's raw output and a non-terminating

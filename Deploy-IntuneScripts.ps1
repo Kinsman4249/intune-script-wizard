@@ -113,6 +113,13 @@
 .PARAMETER ListBackups
     List available backup files under -Path/backups and exit.
 
+.PARAMETER ResetRepoConfig
+    Delete the saved repo-push config (Backups, Templates, or All - the
+    default) so the next -Backup/-BackupAll offers the setup prompt again.
+    This is the only way back from a declined ('Declined: true') or
+    misconfigured push target other than deleting the config file by hand.
+    Takes no other parameters and exits immediately after.
+
 .PARAMETER DebugLog
     Trace Graph URLs, request bodies and match scores. Console writes to the
     host, File writes to -Path/logs/wizard-<timestamp>.log, Both does each.
@@ -166,6 +173,8 @@ param(
     [switch]$BackupAll,
     [switch]$NoTemplates,
     [switch]$ListBackups,
+    [ValidateSet('Backups', 'Templates', 'All')]
+    [string]$ResetRepoConfig,
     [ValidateSet('None', 'Console', 'File', 'Both')]
     [string]$DebugLog = 'None',
     [string[]]$SourceRepo,
@@ -237,6 +246,17 @@ function Invoke-WizardRun {
         }
         Get-ChildItem -LiteralPath $backupDir -Filter '*.json' | Sort-Object LastWriteTime -Descending |
             Format-Table Name, LastWriteTime -AutoSize
+        return $script:WizardExitOk
+    }
+
+    if ($ResetRepoConfig) {
+        $removed = @(Reset-WizardRepoBackupConfig -Kind $ResetRepoConfig)
+        if ($removed.Count -eq 0) {
+            Write-Host "No repo config found for '$ResetRepoConfig'; nothing to reset."
+        } else {
+            foreach ($path in $removed) { Write-Host "Removed $path" }
+            Write-Host "The next -Backup/-BackupAll will offer the setup prompt again."
+        }
         return $script:WizardExitOk
     }
 
