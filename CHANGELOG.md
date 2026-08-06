@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-08-06
+
+### Added
+
+Added `#assignall` meta comment, usable alongside `#group:` to assign a script to the named group(s) *and* the default all-users/all-devices target, instead of the default replacing the group list as plain `#group:` alone does. `Get-WizardDesiredAssignments` in `lib/Assignments.ps1` gained an `-AssignAll` switch that adds the default target on top of explicit groups only when set; `Get-ScriptMetadata` in `lib/Parsing.ps1` parses the new directive and rejects it in combination with `#noassignments`, matching the existing `#group:`/`#excludegroup:` rule. Template export (`lib/Template.ps1`, `lib/TemplateHeader.ps1`) now recognises when the tenant's live assignments include the default target alongside specific groups and regenerates `#assignall` on export, so this combination round-trips through backup/restore where it previously could not be expressed at all. The `Test-E2ETenantWideRepoBackupRestore.ps1` e2e test's "known limitation" carve-out for all-devices/all-licensed-users assignments was removed accordingly, since those targets now round-trip via `#assignall` instead of being silently dropped.
+
+### Fixed
+
+Fixed `Restore-WizardBackup` in `lib/Restore.ps1` writing a full non-terminating error record to the console on every restore of a script that a prior delete step had already removed, even though the 404 is the expected, silently-handled path. Added `-ErrorAction Stop` to the existence check so the SDK raises immediately instead of also printing before the catch block runs, which previously made a normal restore look like it had crashed.
+
 ## [1.16.0] - 2026-08-06
 
 ### Added
