@@ -234,7 +234,12 @@ try {
     if (-not $repoConfigured) {
         throw "Cannot continue without a configured Templates repo push. Re-run and complete the setup prompt, or delete '$(Get-WizardRepoBackupConfigPath -Kind Templates)' and try again."
     }
-    $remoteUrl = [string]$templatesConfig['RemoteUrl']
+    # Raw, not RemoteUrl: RemoteUrl is the bare git URL with the ref/subpath
+    # already split off into their own config fields. Get-WizardRepoSourceSpec
+    # (used below for the verification clone, and passed to -SourceRepo for
+    # the restore) needs the combined '<url>#<ref>::<subpath>' form to find
+    # the same branch/folder the push actually wrote to.
+    $remoteUrl = [string]$templatesConfig['Raw']
     Write-Host "  Using $remoteUrl" -ForegroundColor DarkGray
 
     # ---------------------------------------------------------------- Step 2

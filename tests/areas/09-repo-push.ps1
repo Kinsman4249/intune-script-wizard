@@ -201,6 +201,52 @@ $devFiles2 = & git --git-dir=$bareRepo3 ls-tree -r --name-only dev 2>$null
 Check 'Subpath push: second push adds the new file under the subpath' ($devFiles2 -contains 'Scripts/Intune/script-2.json') "files: $devFiles2"
 Check 'Subpath push: second push still leaves the sibling folder alone' ($devFiles2 -contains 'Scripts/OtherProject/keep.txt') "files: $devFiles2"
 
+# ---- '::subpath' push: pre-existing content INSIDE the subpath survives --
+# Regression test for a real incident: the subpath sync used to delete the
+# whole configured folder and replace it wholesale, wiping out a placeholder
+# file that was already sitting there before the wizard ever pushed to it.
+# It must now leave anything it didn't itself write alone by default.
+$bareRepo4 = Join-Path $scratch 'bare-repo-subpath-placeholder.git'
+& git init --bare -q $bareRepo4
+$seedClone2 = Join-Path $scratch 'seed-clone-2'
+& git clone -q $bareRepo4 $seedClone2 2>$null
+New-Item -ItemType Directory -Path (Join-Path $seedClone2 'Scripts/Intune') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $seedClone2 'Scripts/Intune/placeholder.txt') -Value 'do not delete me'
+Set-Content -LiteralPath (Join-Path $seedClone2 'Scripts/Intune/script-1.json') -Value '{"Id":"pre-existing"}'
+& git -C $seedClone2 add -A
+& git -C $seedClone2 -c user.name='Wizard Test' -c user.email='wizard-test@example.invalid' commit -q -m 'Seed'
+& git -C $seedClone2 push -q origin HEAD:main 2>$null
+& git --git-dir=$bareRepo4 symbolic-ref HEAD refs/heads/main
+
+$rbHomeSubpath2 = Join-Path $scratch 'rbhome-subpath-placeholder'
+New-Item -ItemType Directory -Path $rbHomeSubpath2 -Force | Out-Null
+Invoke-RepoBackupHarness -Action 'save-config' -HomeDir $rbHomeSubpath2 `
+    -Config @{ Provider = 'git'; RemoteUrl = $bareRepo4; Subpath = 'Scripts/Intune'; Declined = $false } | Out-Null
+
+# The wizard's own local backups/ never had 'placeholder.txt' and pushes a
+# same-named-but-different 'script-1.json' - the placeholder is unrelated
+# content, script-1.json is a same-path conflict. Non-interactive, so the
+# safe default (leave it alone) applies to both without a prompt.
+$bkSubpath2 = Join-Path $scratch 'push-subpath-placeholder'
+New-Item -ItemType Directory -Path $bkSubpath2 -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $bkSubpath2 'script-1.json') -Value '{"Id":"new-from-wizard"}'
+Set-Content -LiteralPath (Join-Path $bkSubpath2 'script-2.json') -Value '{"Id":"2"}'
+$r3 = Invoke-RepoBackupHarness -Action 'push' -HomeDir $rbHomeSubpath2 -BackupDir $bkSubpath2
+Check 'Subpath push: does not fail when the subpath already has content' ($r3.ExitCode -eq 0) "exit $($r3.ExitCode)`n$($r3.Output)"
+
+$devFiles3 = & git --git-dir=$bareRepo4 ls-tree -r --name-only main 2>$null
+Check 'Subpath push: pre-existing placeholder file survives' ($devFiles3 -contains 'Scripts/Intune/placeholder.txt') "files: $devFiles3"
+Check 'Subpath push: new, non-conflicting file is added' ($devFiles3 -contains 'Scripts/Intune/script-2.json') "files: $devFiles3"
+
+$placeholderContent = (& git --git-dir=$bareRepo4 show "main:Scripts/Intune/placeholder.txt" 2>$null | Out-String).Trim()
+Check 'Subpath push: placeholder content is untouched' ($placeholderContent -eq 'do not delete me') "got '$placeholderContent'"
+
+# Non-interactive default for a same-path conflict is "leave it" - the
+# wizard's own new content must NOT have silently overwritten it.
+$conflictContent = (& git --git-dir=$bareRepo4 show "main:Scripts/Intune/script-1.json" 2>$null | Out-String).Trim()
+Check 'Subpath push: same-name conflict is left untouched by default (non-interactive)' `
+    ($conflictContent -eq '{"Id":"pre-existing"}') "got '$conflictContent'"
+
 Remove-Item Env:\WIZTEST_RBACTION, Env:\WIZTEST_RBCONFIG, Env:\WIZTEST_BACKUPDIR, Env:\WIZTEST_RBKIND,
     Env:\GIT_AUTHOR_NAME, Env:\GIT_AUTHOR_EMAIL, Env:\GIT_COMMITTER_NAME, Env:\GIT_COMMITTER_EMAIL `
     -ErrorAction SilentlyContinue
