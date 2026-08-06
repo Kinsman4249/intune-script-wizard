@@ -185,6 +185,10 @@ function New-WizardTemplateHeader {
         # this is $false (32-bit is the default, so it needs no directive).
         [bool]$RunAs32Bit = $true,
         [switch]$NoAssignments,
+        # Set when the tenant's live assignments included the default
+        # all-users/all-devices target - whether alone, or alongside specific
+        # groups (a combination '#group:' by itself cannot express).
+        [switch]$AssignAll,
         # Each entry: @{ Id = '<guid>'; Name = '<display name>' (or $null) }
         [array]$IncludeGroups = @(),
         [array]$ExcludeGroups = @(),
@@ -203,6 +207,9 @@ function New-WizardTemplateHeader {
     # reverse-resolve in the first place.
     if ($NoAssignments -and ($IncludeGroups.Count -gt 0 -or $ExcludeGroups.Count -gt 0)) {
         throw "New-WizardTemplateHeader: -NoAssignments cannot be combined with -IncludeGroups/-ExcludeGroups; Parsing.ps1 rejects that combination on the way back in."
+    }
+    if ($NoAssignments -and $AssignAll) {
+        throw "New-WizardTemplateHeader: -NoAssignments cannot be combined with -AssignAll; Parsing.ps1 rejects that combination on the way back in."
     }
 
     $warnings = @()
@@ -265,6 +272,7 @@ function New-WizardTemplateHeader {
         $lines += "# WARNING: $w"
     }
 
+    if ($AssignAll) { $lines += '#assignall' }
     if ($NoAssignments) { $lines += '#noassignments' }
 
     # Deliberately not a live #typeoverride:yes. The doubled '#' below cannot

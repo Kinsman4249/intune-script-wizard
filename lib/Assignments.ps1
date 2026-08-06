@@ -125,6 +125,8 @@ function Get-WizardDesiredAssignments {
     #   #noassignments                -> no assignments at all
     #   #group: one or more           -> a groupAssignmentTarget per group
     #   no #group:                    -> the all-users / all-devices default
+    #   #assignall + #group:          -> the default target ALSO added
+    #                                    alongside the listed groups
     #   #excludegroup: one or more    -> an exclusionGroupAssignmentTarget per
     #                                    group, on top of whichever include
     #                                    targets the rules above produced
@@ -134,6 +136,7 @@ function Get-WizardDesiredAssignments {
     param(
         [Parameter(Mandatory)][ValidateSet('user', 'device')][string]$Type,
         [switch]$NoAssignments,
+        [switch]$AssignAll,
         [string[]]$IncludeGroupIds = @(),
         [string[]]$ExcludeGroupIds = @()
     )
@@ -141,6 +144,9 @@ function Get-WizardDesiredAssignments {
     if ($NoAssignments) { return @() }
 
     $assignments = @()
+    $defaultTarget = @{
+        '@odata.type' = "#microsoft.graph.$(Get-WizardAssignmentTargetType -Type $Type)"
+    }
 
     if ($IncludeGroupIds.Count -gt 0) {
         foreach ($groupId in $IncludeGroupIds) {
@@ -149,10 +155,16 @@ function Get-WizardDesiredAssignments {
                 'groupId'     = $groupId
             }
         }
-    } else {
-        $assignments += New-WizardAssignmentEntry -Target @{
-            '@odata.type' = "#microsoft.graph.$(Get-WizardAssignmentTargetType -Type $Type)"
+        # Only #assignall adds the default target on top of explicit groups -
+        # without it, '#group:' alone still means "only these groups".
+        if ($AssignAll) {
+            $assignments += New-WizardAssignmentEntry -Target $defaultTarget
         }
+    } else {
+        # No groups named: the default target applies whether or not #assignall
+        # is present, same as it always has - #assignall only adds meaning once
+        # #group: entries are also in the picture.
+        $assignments += New-WizardAssignmentEntry -Target $defaultTarget
     }
 
     foreach ($groupId in $ExcludeGroupIds) {
@@ -173,12 +185,12 @@ function Get-WizardAssignmentSummary {
 
     if ($Meta.NoAssignments) { return 'no assignments' }
 
+    $defaultLabel = if ($Meta.Type -eq 'user') { 'all users' } else { 'all devices' }
     $summary = if (@($Meta.GroupRefs).Count -gt 0) {
-        "group(s): $(@($Meta.GroupRefs) -join ', ')"
-    } elseif ($Meta.Type -eq 'user') {
-        'all users'
+        $groupsLabel = "group(s): $(@($Meta.GroupRefs) -join ', ')"
+        if ($Meta.AssignAll) { "$groupsLabel, plus $defaultLabel" } else { $groupsLabel }
     } else {
-        'all devices'
+        $defaultLabel
     }
 
     if (@($Meta.ExcludeGroupRefs).Count -gt 0) {
@@ -200,6 +212,7 @@ function Set-WizardAssignments {
     $assignments = @(Get-WizardDesiredAssignments `
         -Type $Meta.Type `
         -NoAssignments:$Meta.NoAssignments `
+        -AssignAll:$Meta.AssignAll `
         -IncludeGroupIds $Meta.IncludeGroupIds `
         -ExcludeGroupIds $Meta.ExcludeGroupIds)
 

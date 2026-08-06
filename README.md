@@ -36,6 +36,7 @@ effect on the endpoint.
 | `#typeoverride:yes` | Let this script's `#type:` win over the `user/`/`device/` folder it sits in |
 | `#noassignments` (or `#noassigments`) | Do not assign this script to anyone |
 | `#group:"Name"` or `#group:<guid>` | Assign to this group instead of all users/devices. Repeatable |
+| `#assignall` | With `#group:`, also assign to all users/devices (on top of the named group(s)) instead of replacing the default |
 | `#excludegroup:"Name"` or `#excludegroup:<guid>` | Exclude this group from the assignment. Repeatable |
 | `#scriptcheck:yes` | Enforce script signature check (default: off) |
 | `#host:64` | Run under 64-bit PowerShell host (default: 32-bit) |
@@ -69,6 +70,10 @@ By default a script goes to **all users** (`user/`) or **all devices**
 # A group, minus a subset of it:
 #group:"All Laptops"
 #excludegroup:"Pilot Ring"
+
+# A specific group AND the default all-devices/all-users target, both:
+#group:"Pilot Ring"
+#assignall
 ```
 
 Notes:
@@ -84,8 +89,9 @@ Notes:
   legal in Entra ID, so the tool refuses to guess - use the GUID instead.
 - Assignments are a full replacement, so adding `#group:` to a script that was
   previously assigned to all devices moves it; it doesn't stack.
-- `#noassignments` combined with `#group:`/`#excludegroup:`, or the same group
-  listed as both include and exclude, is rejected at parse time.
+- `#noassignments` combined with `#group:`/`#excludegroup:`/`#assignall`, or
+  the same group listed as both include and exclude, is rejected at parse
+  time.
 - `-DryRun` prints the resolved target for each script, so you can confirm the
   intent before anything changes.
 
@@ -216,8 +222,10 @@ regenerating every meta comment this tool understands from the tenant's live
 settings: `#scriptname:`, `#type:`, a `#startdesc`/`#enddesc` block if there's
 a description, `#scriptcheck:yes`/`#host:64` if either is non-default,
 `#group:`/`#excludegroup:` for each assignment target (group ids are
-reverse-resolved back to their display names - see below), and
-`#noassignments` if the script currently has none. Re-exporting a script
+reverse-resolved back to their display names - see below), `#assignall` if
+the tenant's assignments also include the default all-users/all-devices
+target alongside specific groups, and `#noassignments` if the script
+currently has none. Re-exporting a script
 whose template already exists updates the header in place and leaves
 everything below it - the actual script body - untouched.
 

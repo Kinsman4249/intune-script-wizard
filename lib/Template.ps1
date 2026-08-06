@@ -178,6 +178,7 @@ function Export-WizardScriptTemplate {
     $includeGroups = @()
     $excludeGroups = @()
     $unsupportedWarnings = @()
+    $assignAll = $false
     $noAssignments = ($Assignments.Count -eq 0)
 
     foreach ($assignment in $Assignments) {
@@ -192,8 +193,8 @@ function Export-WizardScriptTemplate {
                 $groupId = [string]$target['groupId']
                 $excludeGroups += @{ Id = $groupId; Name = (Resolve-WizardGroupDisplayName -Id $groupId -State $State) }
             }
-            '#microsoft.graph.allLicensedUsersAssignmentTarget' { }
-            '#microsoft.graph.allDevicesAssignmentTarget' { }
+            '#microsoft.graph.allLicensedUsersAssignmentTarget' { $assignAll = $true }
+            '#microsoft.graph.allDevicesAssignmentTarget' { $assignAll = $true }
             default {
                 $unsupportedWarnings += "Assignment target of type '$($target['@odata.type'])' on '$($Script.DisplayName)' cannot be expressed by any #group:/#excludegroup: directive; the JSON backup is the record of it."
             }
@@ -210,6 +211,7 @@ function Export-WizardScriptTemplate {
         -EnforceSignatureCheck:([bool]$Script.EnforceSignatureCheck) `
         -RunAs32Bit (Get-WizardScriptRunAs32Bit -Script $Script) `
         -NoAssignments:$noAssignments `
+        -AssignAll:$assignAll `
         -IncludeGroups $includeGroups `
         -ExcludeGroups $excludeGroups `
         -UnsupportedTargetWarnings $unsupportedWarnings `

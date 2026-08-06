@@ -20,6 +20,7 @@ $ws = New-Workspace -Scripts @(
     @{ Rel = 'device/Excl-Only.ps1'; Body = "#excludegroup:`"Pilot Ring`"`nWrite-Host 'c'`n" }
     @{ Rel = 'device/Excl-Guid.ps1'; Body = "#excludegroup:$exclGuid`nWrite-Host 'd'`n" }
     @{ Rel = 'device/Mixed-Refs.ps1'; Body = "#group:`"Helpdesk Laptops`"`n#excludegroup:$exclGuid`nWrite-Host 'e'`n" }
+    @{ Rel = 'device/Group-Plus-All.ps1'; Body = "#group:`"Helpdesk Laptops`"`n#assignall`nWrite-Host 'f'`n" }
 )
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 
@@ -73,6 +74,15 @@ Check 'Named include + GUID exclude both land' (
     ($mixed | Where-Object { $_['@odata.type'] -eq '#microsoft.graph.exclusionGroupAssignmentTarget' }).groupId -eq $exclGuid
 ) ($mixed | ConvertTo-Json -Compress)
 
+# #assignall alongside #group: adds the default all-devices target on top of
+# the named group, rather than the group replacing it (plain #group: would).
+$groupPlusAll = Get-TargetsFor $r.State 'Group-Plus-All'
+$groupPlusAllTypes = @($groupPlusAll | ForEach-Object { $_['@odata.type'] }) | Sort-Object
+Check '#assignall keeps both the group and the all-devices default' (
+    ($groupPlusAllTypes -join ',') -eq '#microsoft.graph.allDevicesAssignmentTarget,#microsoft.graph.groupAssignmentTarget' -and
+    ($groupPlusAll | Where-Object { $_['@odata.type'] -eq '#microsoft.graph.groupAssignmentTarget' }).groupId -eq $helpdeskId
+) ($groupPlusAll | ConvertTo-Json -Compress)
+
 # --------------------------------------------------------------- Test 11
 # Unresolvable and ambiguous group names abort the whole run.
 foreach ($case in @(
@@ -94,6 +104,10 @@ foreach ($case in @(
 $ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#noassignments`n#group:`"Helpdesk Laptops`"`n$bodyA" })
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
 Check '#noassignments + #group: rejected' ($r.Output -match 'cannot be combined') $r.Output
+
+$ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#noassignments`n#assignall`n$bodyA" })
+$r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }
+Check '#noassignments + #assignall rejected' ($r.Output -match 'cannot be combined') $r.Output
 
 $ws = New-Workspace -Scripts @(@{ Rel = 'device/Bad.ps1'; Body = "#group:`"Pilot Ring`"`n#excludegroup:`"Pilot Ring`"`n$bodyA" })
 $r = Invoke-Wizard -Workspace $ws -State @{ scripts = @(); groups = $directory }

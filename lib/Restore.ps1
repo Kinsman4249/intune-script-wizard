@@ -255,8 +255,13 @@ function Restore-WizardBackup {
         # still live - two copies in the tenant, the assignments moved to the
         # copy, and the backup filed away as though it had all worked.
         try {
+            # -ErrorAction Stop: without it, a 404 here writes a full error
+            # record straight to the console (the SDK treats "not found" as a
+            # non-terminating error before also throwing) even though this is
+            # the expected, silently-handled path below - it would read as a
+            # crash on every restore of a script the e2e/delete flow removed.
             $exists = Invoke-WizardGraphRetry -What "Checking whether script $($backup['Id']) still exists" -Call {
-                Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id']
+                Get-MgBetaDeviceManagementScript -DeviceManagementScriptId $backup['Id'] -ErrorAction Stop
             }
         } catch {
             if (-not (Test-WizardGraphNotFound -ErrorRecord $_)) {

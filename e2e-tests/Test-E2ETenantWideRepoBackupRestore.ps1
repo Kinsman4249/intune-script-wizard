@@ -185,15 +185,6 @@ function Get-WizardAssignmentTargetKeys {
     return @($Assignments | ForEach-Object { Get-WizardAssignmentTargetKey -Target $_['target'] } | Sort-Object -Unique)
 }
 
-# The two target types Export-WizardScriptTemplate cannot express as a
-# #group:/#excludegroup: directive - see its own comment. A script assigned
-# only to one of these loses that assignment across a repo restore by
-# design, not by bug.
-$script:UnroundtrippableAssignmentTypes = @(
-    '#microsoft.graph.allLicensedUsersAssignmentTarget',
-    '#microsoft.graph.allDevicesAssignmentTarget'
-)
-
 # --------------------------------------------------------------------------
 # Scratch workspace. Rebuilt every run; NOT removed at the end - it holds
 # the only local copy of the pre-delete JSON backups.
@@ -445,22 +436,19 @@ try {
         $restoredAssignments = @(Get-WizardScriptAssignments -Id $restored.Id)
         $restoredAssignmentKeys = Get-WizardAssignmentTargetKeys -Assignments $restoredAssignments
 
-        $droppedByDesign = @($originalAssignmentKeys | Where-Object { ($_ -split '\|')[0] -in $script:UnroundtrippableAssignmentTypes })
-        $expectedRestoredKeys = @($originalAssignmentKeys | Where-Object { $_ -notin $droppedByDesign })
-        $assignmentsMatch = (@($restoredAssignmentKeys) -join ',') -eq (@($expectedRestoredKeys) -join ',')
+        $assignmentsMatch = (@($restoredAssignmentKeys) -join ',') -eq (@($originalAssignmentKeys) -join ',')
 
         $detailParts = @()
         if (-not $hasHeader) { $detailParts += 'restored content is missing the wizard template header' }
         if (-not $logicMatches) { $detailParts += 'logic differs once comments are stripped' }
         if (-not $propsMatch) { $detailParts += "properties differ (EnforceSignatureCheck/RunAs32Bit/RunAsAccount): original scriptcheck=$($original['EnforceSignatureCheck']) 32bit=$($original['RunAs32Bit']) type=$($original['RunAsAccount']); restored scriptcheck=$($restored.EnforceSignatureCheck) 32bit=$($restored.RunAs32Bit) type=$($restored.RunAsAccount)" }
-        if (-not $assignmentsMatch) { $detailParts += "assignments differ: expected {$($expectedRestoredKeys -join '; ')} got {$($restoredAssignmentKeys -join '; ')}" }
-        if ($droppedByDesign.Count -gt 0) { $detailParts += "known limitation: $($droppedByDesign.Count) assignment target(s) do not round-trip via template (all-devices/all-licensed-users) - {$($droppedByDesign -join '; ')}" }
+        if (-not $assignmentsMatch) { $detailParts += "assignments differ: expected {$($originalAssignmentKeys -join '; ')} got {$($restoredAssignmentKeys -join '; ')}" }
 
         $allOk = $hasHeader -and $logicMatches -and $propsMatch -and $assignmentsMatch
         Check "Restored: $name" $allOk ($detailParts -join '; ')
         $reportRows += [pscustomobject]@{
             Name   = $name
-            Result = if ($allOk) { if ($droppedByDesign.Count -gt 0) { 'PASS (with known limitation)' } else { 'PASS' } } else { 'FAIL' }
+            Result = if ($allOk) { 'PASS' } else { 'FAIL' }
             Detail = if ($detailParts.Count -gt 0) { $detailParts -join '; ' } else { 'Content, properties and assignments all matched.' }
         }
     }

@@ -69,6 +69,7 @@ function Get-ScriptMetadata {
     $typeFromComment = $null
     $typeOverride = $false
     $noAssignments = $false
+    $assignAll = $false
     $noTemplate = $false
     $enforceSignatureCheck = $false
     $runAs32Bit = $true   # default: do NOT run in 64-bit PowerShell host
@@ -124,6 +125,14 @@ function Get-ScriptMetadata {
         }
         if ($trimmed -match '^#\s*noassig(?:n)?ments?\s*$') {
             $noAssignments = $true
+            continue
+        }
+        # Explicitly include the default all-users/all-devices target alongside
+        # whatever #group: entries (if any) are also present. Without this, a
+        # script assigned to both a specific group AND the default target has
+        # no way to say so - '#group:' alone means "only these groups".
+        if ($trimmed -match '^#\s*assignall\s*$') {
+            $assignAll = $true
             continue
         }
         if ($trimmed -match $script:WizardNoTemplatePattern) {
@@ -189,6 +198,10 @@ function Get-ScriptMetadata {
         throw "'$Path': #noassignments cannot be combined with #group: or #excludegroup:. Remove one or the other."
     }
 
+    if ($noAssignments -and $assignAll) {
+        throw "'$Path': #noassignments cannot be combined with #assignall. Remove one or the other."
+    }
+
     # Pipeline: $groupRefs is piped into Where-Object, which keeps only the
     # entries that also appear in $excludeGroupRefs (-in checks membership).
     # The result is any group listed in both places, which is a contradiction.
@@ -207,6 +220,7 @@ function Get-ScriptMetadata {
         Description           = $description
         Type                  = $type
         NoAssignments         = $noAssignments
+        AssignAll             = $assignAll
         NoTemplate            = $noTemplate
         EnforceSignatureCheck = $enforceSignatureCheck
         RunAs32Bit            = $runAs32Bit
