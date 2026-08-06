@@ -635,34 +635,12 @@ retry and restore paths are driven without a tenant. Retries are real waits, so
 the suite sets `WIZARD_RETRY_BASE_SECONDS` to shrink the backoff base; nothing
 in normal use sets it.
 
-Against a real dev tenant, [e2e-tests/](e2e-tests) generates a set of scripts to
-deploy, plus two self-checking runs that Graph stubs can't stand in for:
-
-```powershell
-# After deploying a generated root: is everything really in the tenant, intact?
-pwsh e2e-tests/Test-E2EDeployedSet.ps1 -Path e2e-tests/generated/main
-
-# Can a backup actually be restored?
-pwsh e2e-tests/Test-E2EBackupRestore.ps1
-```
-
-The first re-reads every deployed script out of Intune and checks the uploaded
-content is **byte identical** to the local file (SHA256 both sides, so a BOM,
-a CRLF/LF flip or a lost trailing newline fails it), that run-as, signature
-check, 32/64-bit, filename and description match the meta comments, and that the
-assignment set matches target for target. It's read-only.
-
-The second covers the update -> backup -> restore path nothing else exercises:
-it deploys a throwaway script, updates it to force a backup, verifies the backup
-file is well-formed base64 rather than a JSON array of numbers, restores it, and
-confirms the tenant holds the original bytes again. It cleans up after itself.
-
-Both exit non-zero if any check failed.
-
-After any change, still confirm against a non-production tenant with `-DryRun`
-first, then for real, checking in the Intune portal (Devices > Scripts) that
-the display name, "run as", signature check, 32/64-bit setting, and assignment
-match what you expected.
+Against a real dev tenant, [e2e-tests/](e2e-tests) generates a set of scripts
+to deploy, plus several self-checking runs that Graph stubs can't stand in
+for - covering real tenant round-trips, backup/restore, template export and
+repo push/pull, up to a full disaster-recovery rehearsal against every script
+in the tenant. See [e2e-tests/README.md](e2e-tests/README.md) for what each
+one does and when to run it.
 
 ## Telemetry
 

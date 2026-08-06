@@ -312,3 +312,10 @@ first, or pass `-IncludeFlagged` if you're sure it's safe to delete anyway.
 This is also the fastest way to reset the tenant between runs while you're
 iterating on something else - e.g. testing the wizard's own `-Restore`
 behavior - without waiting on a full generate/deploy/verify cycle.
+
+## After any change
+
+Still confirm against a non-production tenant with `-DryRun` first, then for
+real, checking in the Intune portal (Devices > Scripts) that the display
+name, "run as", signature check, 32/64-bit setting, and assignment match what
+you expected.
