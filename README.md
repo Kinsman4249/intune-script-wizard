@@ -416,6 +416,23 @@ never the full `Microsoft.Graph` meta-module, which pulls in every Graph
 service and is several GB. You'll be prompted before anything is installed
 unless you pass `-AcceptModuleInstall`.
 
+### Optional: CLIs for pushing to a remote repo
+
+Neither CLI below is required to run the wizard itself - they're only used by
+the optional backup/template push (see "Pushing backups and templates to a
+git repo") and by `-SourceRepo`, and only if you choose a provider that
+benefits from them:
+
+- **`gh` (GitHub CLI)**: lets GitHub/GitLab pushes use one-command interactive
+  sign-in instead of a manually-created personal access token. Install with
+  `winget install GitHub.cli`.
+- **`az` (Azure CLI)**: lets Azure DevOps pushes authenticate with `az login`
+  and a short-lived Microsoft Entra token instead of a PAT. Install with
+  `winget install Microsoft.AzureCLI`.
+
+Without either installed, the wizard falls back to asking for a personal
+access token instead - both CLIs are conveniences, not hard requirements.
+
 ### Signing in
 
 Every run signs in fresh. Any Graph session already open in the PowerShell
