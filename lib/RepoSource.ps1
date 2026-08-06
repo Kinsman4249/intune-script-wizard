@@ -83,7 +83,16 @@ function Get-WizardRepoSourceSpec {
 function Sync-WizardRepoSource {
     param(
         [Parameter(Mandatory)]$Spec,
-        [Parameter(Mandatory)][string]$CacheRoot
+        [Parameter(Mandatory)][string]$CacheRoot,
+        # For verification clones only (see e2e-tests/): if the pushed
+        # subpath had nothing under it, git never commits the empty folder,
+        # so a fresh clone won't have it even though the push succeeded.
+        # Creating it and returning it (now legitimately empty) lets the
+        # caller's file-count comparison report that honestly instead of
+        # this function throwing on a non-error. Real -SourceRepo pulls
+        # must NOT set this: there, a missing subpath is most often a typo
+        # and should keep failing loudly.
+        [switch]$CreateSubPathIfMissing
     )
 
     if (-not (Test-WizardCommandAvailable -Name 'git')) {
@@ -120,7 +129,11 @@ function Sync-WizardRepoSource {
     if ($Spec.SubPath) {
         $scanRoot = Join-Path $dest $Spec.SubPath
         if (-not (Test-Path -LiteralPath $scanRoot -PathType Container)) {
-            throw "-SourceRepo '$($Spec.Raw)': subpath '$($Spec.SubPath)' does not exist in this repo/ref."
+            if ($CreateSubPathIfMissing) {
+                New-Item -ItemType Directory -Path $scanRoot -Force -ErrorAction Stop | Out-Null
+            } else {
+                throw "-SourceRepo '$($Spec.Raw)': subpath '$($Spec.SubPath)' does not exist in this repo/ref."
+            }
         }
     }
     Write-WizardDebug "Repo source '$($Spec.Label)' scanning under $scanRoot"

@@ -329,7 +329,7 @@ try {
     $spec = Get-WizardRepoSourceSpec -Raw $remoteUrl
     $cloneScanRoot = $null
     try {
-        $cloneScanRoot = Sync-WizardRepoSource -Spec $spec -CacheRoot $verifyCacheRoot
+        $cloneScanRoot = Sync-WizardRepoSource -Spec $spec -CacheRoot $verifyCacheRoot -CreateSubPathIfMissing
     } catch {
         Check 'Remote clone for verification succeeded' $false $_.Exception.Message
     }
