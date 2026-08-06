@@ -53,7 +53,7 @@ function Sync-WizardRepoBackupSubpath {
     New-Item -ItemType Directory -Path $scratch -Force -ErrorAction Stop | Out-Null
 
     try {
-        $cloneArgs = @('clone', '--depth', '1', '--quiet')
+        $cloneArgs = $script:WizardGitNoCrlfArgs + @('clone', '--depth', '1', '--quiet')
         if ($ref) { $cloneArgs += @('--branch', $ref) }
         $cloneArgs += @($remoteUrl, $scratch)
 
@@ -69,7 +69,7 @@ function Sync-WizardRepoBackupSubpath {
             Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Path $scratch -Force -ErrorAction Stop | Out-Null
             Invoke-WizardExternalCommand -FilePath 'git' `
-                -ArgumentList @('clone', '--depth', '1', '--quiet', $remoteUrl, $scratch) `
+                -ArgumentList ($script:WizardGitNoCrlfArgs + @('clone', '--depth', '1', '--quiet', $remoteUrl, $scratch)) `
                 -What "Cloning $remoteUrl" | Out-Null
             Invoke-WizardExternalCommand -FilePath 'git' `
                 -ArgumentList @('-C', $scratch, 'checkout', '-b', $ref) `
@@ -134,7 +134,7 @@ function Sync-WizardRepoBackupSubpath {
             Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         }
 
-        Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @('-C', $scratch, 'add', '-A') `
+        Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList ($script:WizardGitNoCrlfArgs + @('-C', $scratch, 'add', '-A')) `
             -What "Staging $($info.Noun) in $scratch" | Out-Null
 
         # 'git diff --cached --quiet' exits 1 when there ARE staged changes
@@ -152,7 +152,7 @@ function Sync-WizardRepoBackupSubpath {
 
         $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
         Invoke-WizardExternalCommand -FilePath 'git' `
-            -ArgumentList @('-C', $scratch, 'commit', '-m', "$($info.CommitPrefix) $stamp") `
+            -ArgumentList ($script:WizardGitNoCrlfArgs + @('-C', $scratch, 'commit', '-m', "$($info.CommitPrefix) $stamp")) `
             -What "Committing $($info.Noun) in $scratch" | Out-Null
 
         if ($Config['Provider'] -eq 'azdevops-entra') {

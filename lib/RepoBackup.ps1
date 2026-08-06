@@ -18,6 +18,19 @@
 # https://learn.microsoft.com/azure/devops/integrate/get-started/authentication/entra
 $script:WizardAzDevOpsResourceId = '499b84ac-1321-427f-aa17-267ca6975798'
 
+# Export-WizardScriptTemplate (lib/Template.ps1) deliberately preserves each
+# script's original CRLF-vs-LF convention byte-for-byte. Without this, git's
+# own autocrlf normalization - on by default in most Windows git installs -
+# would silently undo that: LF endings get rewritten to CRLF on checkout
+# (and vice versa on commit), corrupting content that was exported exactly as
+# the tenant had it. Passed as global '-c' options - rather than relying on
+# 'git config' inside the target repo - so it applies uniformly whether the
+# call is a clone, an add, or a commit, regardless of the machine's own git
+# config. Prepend this to the ArgumentList of any git call that clones,
+# stages, or commits file content (read-only calls like rev-parse/branch/push
+# don't need it).
+$script:WizardGitNoCrlfArgs = @('-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false')
+
 # Per-target strings for the two independent repo-push destinations this file
 # supports. A third target later is a table entry here rather than
 # if-statements scattered through every function below.
@@ -383,7 +396,7 @@ function Sync-WizardRepoBackupDir {
             -What "Adding the remote in $Dir" | Out-Null
     }
 
-    Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList @('-C', $Dir, 'add', '-A') `
+    Invoke-WizardExternalCommand -FilePath 'git' -ArgumentList ($script:WizardGitNoCrlfArgs + @('-C', $Dir, 'add', '-A')) `
         -What "Staging $($info.Noun) in $Dir" | Out-Null
 
     # 'git diff --cached --quiet' exits 1 when there ARE staged changes and 0
@@ -400,7 +413,7 @@ function Sync-WizardRepoBackupDir {
 
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     Invoke-WizardExternalCommand -FilePath 'git' `
-        -ArgumentList @('-C', $Dir, 'commit', '-m', "$($info.CommitPrefix) $stamp") `
+        -ArgumentList ($script:WizardGitNoCrlfArgs + @('-C', $Dir, 'commit', '-m', "$($info.CommitPrefix) $stamp")) `
         -What "Committing $($info.Noun) in $Dir" | Out-Null
 
     $branch = (Invoke-WizardExternalCommand -FilePath 'git' `

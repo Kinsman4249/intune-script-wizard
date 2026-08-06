@@ -176,7 +176,6 @@ function Format-WizardGroupDirective {
 # exactly what Get-ScriptMetadata (lib/Parsing.ps1) parses back out.
 function New-WizardTemplateHeader {
     param(
-        [Parameter(Mandatory)][string]$TenantId,
         [Parameter(Mandatory)][datetime]$ExportedAt,
         [Parameter(Mandatory)][string]$DisplayName,
         [AllowEmptyString()][string]$Description = '',
@@ -209,7 +208,11 @@ function New-WizardTemplateHeader {
     $warnings = @()
     $lines = @()
     $lines += $script:WizardTemplateStartMarker
-    $lines += "# Exported from tenant $TenantId on $($ExportedAt.ToString('o')) by intune-script-wizard $script:WizardVersion."
+    # No tenant id here: this line, and the whole template file, is what gets
+    # pushed to a remote git repo (see lib/RepoBackup.ps1) - possibly one
+    # shared beyond this tenant's own admins - so nothing that identifies the
+    # tenant belongs in it.
+    $lines += "# Exported on $($ExportedAt.ToString('o')) by intune-script-wizard $script:WizardVersion."
 
     # Trap 1: a '"' in the display name cannot round-trip through
     # #scriptname:"..." (the parser regex is "([^"]+)"). Strip it and warn
@@ -292,17 +295,19 @@ function New-WizardTemplateHeader {
     }
 }
 
-# Strips the "# Exported from tenant ... on <timestamp> ..." line that
+# Strips the "# Exported ... by intune-script-wizard ..." line that
 # New-WizardTemplateHeader stamps fresh on every export, before an
 # unchanged-content comparison. Without this, that line alone (never
 # byte-identical between two separate runs, no matter how close together)
 # would make Resolve-WizardTemplateConflict's equality check fail every
 # single time, defeating the "Unchanged" path it exists for - see the
-# comment on that check below.
+# comment on that check below. The pattern also matches the older
+# "Exported from tenant <id> on ..." form so a template exported by a
+# pre-redaction version of the wizard still compares as unchanged.
 function Get-WizardTemplateComparisonBytes {
     param([Parameter(Mandatory)][byte[]]$Bytes)
 
     $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
-    $lines = @($text -split "`r?`n" | Where-Object { $_ -notmatch '^# Exported from tenant .* on .* by intune-script-wizard ' })
+    $lines = @($text -split "`r?`n" | Where-Object { $_ -notmatch '^# Exported .* by intune-script-wizard ' })
     return [System.Text.Encoding]::UTF8.GetBytes($lines -join "`n")
 }

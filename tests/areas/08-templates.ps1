@@ -187,7 +187,7 @@ Check '#notemplate: counted as excluded'       ($rNotpl.Output -match 'Templates
 # The tag behind a previously-written header is still honoured: the header
 # must be stripped BEFORE the #notemplate check runs, or a script re-exported
 # after being tagged would slip through hidden behind its own old header.
-$oldHeader = (New-WizardTemplateHeader -TenantId 'tenant-x' -ExportedAt (Get-Date) -DisplayName 'Excluded Script' -Type 'device').Text
+$oldHeader = (New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'Excluded Script' -Type 'device').Text
 $behindHeaderBody = "$oldHeader#notemplate`n$tplDeviceBody"
 $notplState2 = @{ groups = @(); scripts = @(@{
     id = 'tpl-notpl-2'; displayName = 'Excluded Script 2'; description = ''
@@ -260,17 +260,17 @@ Check 'Scope degradation: no group name leaked in'         (-not ($degradeText -
 Check 'Scope degradation: warns about the declined scope' ($rDegrade.Output -match 'could not be resolved to a display name') $rDegrade.Output
 
 # ------------------------------------------ Templates: New-WizardTemplateHeader unit checks
-$quoteResult = New-WizardTemplateHeader -TenantId 't' -ExportedAt (Get-Date) -DisplayName 'My "Special" Script' -Type 'device'
+$quoteResult = New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'My "Special" Script' -Type 'device'
 Check 'Header: quoted display name is stripped and warned' (
     $quoteResult.Text -match '#scriptname:"My Special Script"' -and $quoteResult.Warnings.Count -eq 1
 ) $quoteResult.Text
 
-$enddescResult = New-WizardTemplateHeader -TenantId 't' -ExportedAt (Get-Date) -DisplayName 'Desc Script' -Type 'device' -Description "line one`nenddesc`nline three"
+$enddescResult = New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'Desc Script' -Type 'device' -Description "line one`nenddesc`nline three"
 Check 'Header: a literal enddesc line falls back to plain comments' (
     -not ($enddescResult.Text -match '(?m)^#startdesc\s*$') -and $enddescResult.Text -match '(?m)^# enddesc\s*$' -and $enddescResult.Warnings.Count -eq 1
 ) $enddescResult.Text
 
-$crlfResult = New-WizardTemplateHeader -TenantId 't' -ExportedAt (Get-Date) -DisplayName 'Crlf Script' -Type 'device' -NewLine "`r`n"
+$crlfResult = New-WizardTemplateHeader -ExportedAt (Get-Date) -DisplayName 'Crlf Script' -Type 'device' -NewLine "`r`n"
 Check 'Header: CRLF NewLine is honoured throughout' (
     $crlfResult.Text -match "`r`n" -and -not ($crlfResult.Text -replace "`r`n", '' -match "`n")
 ) 'CRLF not found, or a bare LF slipped through'

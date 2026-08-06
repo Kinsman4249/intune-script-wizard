@@ -98,7 +98,13 @@ function Sync-WizardRepoSource {
         Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction Stop
     }
 
-    $cloneArgs = @('clone', '--depth', '1', '--quiet')
+    # -c core.autocrlf=false/-safecrlf=false: without this, git's own line-
+    # ending normalization on checkout can rewrite a script's original
+    # CRLF/LF convention (which Export-WizardScriptTemplate - lib/Template.ps1
+    # - deliberately preserved byte-for-byte on push) into whatever this
+    # machine's git config prefers, corrupting a restored script's content.
+    # See lib/RepoBackup.ps1's $script:WizardGitNoCrlfArgs.
+    $cloneArgs = $script:WizardGitNoCrlfArgs + @('clone', '--depth', '1', '--quiet')
     if ($Spec.Ref) { $cloneArgs += @('--branch', $Spec.Ref) }
     $cloneArgs += @($Spec.Url, $dest)
 

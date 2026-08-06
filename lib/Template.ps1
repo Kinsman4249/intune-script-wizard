@@ -203,7 +203,6 @@ function Export-WizardScriptTemplate {
     $newLine = if (Test-WizardBodyUsesCrlf -Bytes $bodyBytes) { "`r`n" } else { "`n" }
 
     $headerResult = New-WizardTemplateHeader `
-        -TenantId (Get-MgContext).TenantId `
         -ExportedAt (Get-Date) `
         -DisplayName $Script.DisplayName `
         -Description ([string]$Script.Description) `
