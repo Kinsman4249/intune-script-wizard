@@ -1,5 +1,9 @@
 # Change history
 
+### v1.15.0 (2026-08-06)
+
+Backups and templates repo pushes now accept the same `<git-url>[#ref][::subpath]` syntax already used by `-SourceRepo`, letting a push be confined to one folder of an existing repo instead of replacing it wholesale. A configured subpath is handled by a dedicated clone-merge-push flow (`lib/RepoBackupSubpath.ps1`) that clones the remote fresh, replaces only the configured subpath with the local backup/template contents, and pushes, leaving sibling files and folders in the remote repo untouched. The target branch is created automatically on first push if it does not already exist yet. Because the URL is parsed with the same `Get-WizardRepoSourceSpec` parser `-SourceRepo` uses, backups and templates can now share a single repo and branch without colliding, as long as each is confined to its own subpath; the existing same-remote confirmation prompt now only fires when both would otherwise write to the same location. The repo URL prompts for backups and templates, and the README and e2e-tests README documentation, were updated to show the `<git-url>[#ref][::subpath]` syntax and an Azure DevOps example combining a branch and subpath.
+
 ### v1.14.4 (2026-08-06)
 
 Documentation updates: added a new section in the README explaining optional CLI installations (`gh` for GitHub/GitLab and `az` for Azure DevOps), which streamline remote-repo authentication without being hard requirements. Reorganized the E2E testing section to be more concise and point readers to [e2e-tests/README.md](e2e-tests/README.md) for details on each test's purpose and when to run it. Added an "After any change" section to the E2E tests README with guidance on validating changes against a non-production tenant before pushing.
