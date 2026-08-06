@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-08-06
+
+### Added
+
+Added `-ResetRepoConfig Backups|Templates|All` parameter to reset saved repository push configuration for backups, templates, or both (default). When a repo-push target is declined or misconfigured (detected via `Declined: true` in the config file), the only recovery without manually finding and deleting the config file is to run this parameter, which deletes the matching file(s) so the next `-Backup`/`-BackupAll` or `-Push` for that target offers the setup prompt again. New `Reset-WizardRepoBackupConfig` function in `lib/RepoBackup.ps1` handles the deletion and reports which config file(s) were removed.
+
 ## [1.15.2] - 2026-08-06
 
 Improved e2e test diagnostics for the tenant-wide repo backup/restore test. Added explicit reporting of pre-existing/conflicting files under configured subpaths during the push step, which previously only surfaced via silent warnings. Enhanced mismatch detection to list specific files by their mismatched state (missing on remote, content differs, present on remote only), showing byte counts for content mismatches, so verification failures are traceable to their cause without requiring binary diffs. This makes debugging push issues in non-interactive sessions clearer.
